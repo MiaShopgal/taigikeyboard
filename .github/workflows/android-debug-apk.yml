@@ -4,10 +4,11 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: read
 
 concurrency:
-  group: android-debug-apk-${{ github.ref }}
+  group: android-debug-apk
   cancel-in-progress: false
 
 env:
@@ -65,3 +66,22 @@ jobs:
           name: TaigiKeyboard-debug-${{ github.run_number }}
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Delete previous APK artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          artifact_ids="$(
+            gh api --paginate "repos/$GH_REPO/actions/artifacts?per_page=100" \
+              --jq '.artifacts[]
+                | select(.name | startswith("TaigiKeyboard-debug-"))
+                | select(.workflow_run.id != (env.CURRENT_RUN_ID | tonumber))
+                | .id'
+          )"
+          while IFS= read -r artifact_id; do
+            [[ -n "$artifact_id" ]] || continue
+            gh api --method DELETE "repos/$GH_REPO/actions/artifacts/$artifact_id"
+          done <<< "$artifact_ids"
