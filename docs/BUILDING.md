@@ -93,6 +93,20 @@ make hooks          # pre-commit: gitleaks + personal-data checks on staged chan
 | Dictionary | `make dict` | `python3 -m pytest tests`, run inside `dictionary/` (needs the `taigi-converter` submodule) |
 | taigi-converter | — | `npm test` in `taigi-converter/` |
 
+### Android debug APK
+
+Run `make android-debug-apk` locally to build the Rust native libraries and
+Android debug APK. The APK is written to
+`android/app/build/outputs/apk/debug/`.
+
+After the **Android Debug APK** workflow is merged into the default branch, it
+can be manually dispatched with any branch selected as the run's ref. Download
+the APK from that run's **Artifacts** section; it is not attached to a GitHub
+Release and expires according to the repository's Actions artifact retention
+policy. The workflow uses a runner-generated debug signing key, so its APK may
+not install as an in-place update over a locally built APK; uninstall an older
+build first if needed.
+
 `make test-changed` runs only the rows the branch's changes need
 (`tools/test_select.py`: engine crates plus their reverse dependencies, and
 each touched platform); `BASE=<ref>` diffs against another base,

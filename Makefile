@@ -10,7 +10,7 @@ export PATH := $(HOME)/.cargo/bin:$(PATH)
 # with every toolchain installed (docs/BUILDING.md).
 .DEFAULT_GOAL := help
 
-.PHONY: build protos ios-libs android-libs macos-libs test test-crate test-changed doc dict dogfood e2e help \
+.PHONY: build protos ios-libs android-libs android-debug-apk macos-libs test test-crate test-changed doc dict dogfood e2e help \
         fmt lint hooks scan-secrets scan-secrets-full scan-private \
         i18n i18n-test \
         macos-release desktop-release desktop-patch desktop-announce version-mobile version-desktop \
@@ -54,6 +54,10 @@ ios-libs:
 android-libs:
 	@echo "==> Building Android jniLibs"
 	cd $(ENGINE) && bash scripts/build-android-libs.sh
+
+# Build the Android debug APK and verify the output.
+android-debug-apk:
+	bash tools/android/build-debug-apk.sh
 
 macos-libs:
 	@echo "==> Building macOS xcframework"
@@ -329,6 +333,7 @@ help:
 	@echo "  make protos             Regenerate the committed Swift + Java protobuf bindings (protoc 36.2)"
 	@echo "  make ios-libs           Engine xcframework for iOS (macOS host)"
 	@echo "  make android-libs       Engine jniLibs for Android (cargo-ndk + NDK)"
+	@echo "  make android-debug-apk  Build the Android debug APK"
 	@echo "  make macos-libs         Engine xcframework for the macOS input method (macOS host)"
 	@echo "  make build              All four above, in order (macOS host, every toolchain; no tests)"
 	@echo "  make desktop-check      Native gate for the desktop-shared crates (desktop/)"
