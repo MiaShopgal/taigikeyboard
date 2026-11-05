@@ -99,13 +99,14 @@ Run `make android-debug-apk` locally to build the Rust native libraries and
 Android debug APK. The APK is written to
 `android/app/build/outputs/apk/debug/`.
 
-After the **Android Debug APK** workflow is merged into the default branch, it
-can be manually dispatched with any branch selected as the run's ref. Download
-the APK from that run's **Artifacts** section. After a successful upload, the
-workflow deletes older APK artifacts, keeping only the latest successful
-workflow build; it is not attached to a GitHub Release. The workflow uses a
-runner-generated debug signing key, so its APK may not install as an in-place
-update over a locally built APK; uninstall an older build first if needed.
+After the **Android Debug APK** workflow is merged into the default branch,
+manually dispatch it from `main`. After a successful build, it uploads the APK
+as a workflow artifact and publishes it as a rolling `android-debug` GitHub
+pre-release. Each successful run replaces the previous matching pre-release and
+workflow artifact; a failed build leaves the last successful downloads intact.
+The workflow uses a runner-generated debug signing key, so its APK may not
+install as an in-place update over a locally built APK; uninstall an older build
+first if needed.
 
 `make test-changed` runs only the rows the branch's changes need
 (`tools/test_select.py`: engine crates plus their reverse dependencies, and
