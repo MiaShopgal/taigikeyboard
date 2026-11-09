@@ -129,4 +129,45 @@ public interface AppConfigOrBuilder extends
    * @return The syllableSeparator.
    */
   com.siansiansu.taigikeyboard.engine.proto.SyllableSeparator getSyllableSeparator();
+
+  /**
+   * <pre>
+   * The user's dictionary switches — the one carrier of the composing source
+   * filter (`engine/composing/src/requests.rs` `source_filter_bitmask`): the
+   * `FetchAtPos` candidates, the TPS Hanji conversion walk and the nailed-join
+   * compound oracle (`engine/composing/src/api.rs` `nailed_join`, #772) all
+   * read it. Absent = un-wired sender (test fixtures): every source on.
+   * </pre>
+   *
+   * <code>.taigi.engine.DictionarySourceToggles dictionary_sources = 15;</code>
+   * @return Whether the dictionarySources field is set.
+   */
+  boolean hasDictionarySources();
+  /**
+   * <pre>
+   * The user's dictionary switches — the one carrier of the composing source
+   * filter (`engine/composing/src/requests.rs` `source_filter_bitmask`): the
+   * `FetchAtPos` candidates, the TPS Hanji conversion walk and the nailed-join
+   * compound oracle (`engine/composing/src/api.rs` `nailed_join`, #772) all
+   * read it. Absent = un-wired sender (test fixtures): every source on.
+   * </pre>
+   *
+   * <code>.taigi.engine.DictionarySourceToggles dictionary_sources = 15;</code>
+   * @return The dictionarySources.
+   */
+  com.siansiansu.taigikeyboard.engine.proto.DictionarySourceToggles getDictionarySources();
+
+  /**
+   * <pre>
+   * The user's "use my custom dictionary" setting, OFF: the engine reads no
+   * custom-dictionary rows — not for the `FetchAtPos` list, not for the TPS
+   * Hanji conversion walk. Negative, so an un-wired sender keeps the
+   * dictionary on. Was `FetchAtPos.custom_dictionary_disabled` (field 8)
+   * until the conversion walk read custom rows too (2026-11-09).
+   * </pre>
+   *
+   * <code>bool custom_dictionary_disabled = 16;</code>
+   * @return The customDictionaryDisabled.
+   */
+  boolean getCustomDictionaryDisabled();
 }

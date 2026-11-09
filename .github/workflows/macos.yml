@@ -72,7 +72,7 @@ jobs:
       - name: Install protoc ${{ env.PROTOC_VERSION }}
         run: |
           set -euo pipefail
-          curl -sSfL -o "$RUNNER_TEMP/protoc.zip" \
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/protoc.zip" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-osx-aarch_64.zip"
           echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
@@ -89,6 +89,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build the engine xcframework (arm64)
         run: bash engine/scripts/build-macos-xcframework.sh
@@ -116,7 +117,7 @@ jobs:
       - name: Install protoc ${{ env.PROTOC_VERSION }}
         run: |
           set -euo pipefail
-          curl -sSfL -o "$RUNNER_TEMP/protoc.zip" \
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/protoc.zip" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
           echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
@@ -131,6 +132,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test (macos)
         run: cargo test --manifest-path macos/Cargo.toml --workspace --locked --no-fail-fast
@@ -176,7 +178,7 @@ jobs:
       - name: Install protoc ${{ env.PROTOC_VERSION }}
         run: |
           set -euo pipefail
-          curl -sSfL -o "$RUNNER_TEMP/protoc.zip" \
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/protoc.zip" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
           echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
@@ -194,6 +196,7 @@ jobs:
         with:
           workspaces: macos
           key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo check --all-targets
         run: cargo check --manifest-path macos/Cargo.toml --workspace --all-targets --locked

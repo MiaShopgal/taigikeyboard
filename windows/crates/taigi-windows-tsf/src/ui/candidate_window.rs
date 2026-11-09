@@ -8,22 +8,26 @@
 //! and centred; the selected cell is painted with the accent and white
 //! text; vertical rows are separated by a hairline and align their
 //! annotation column; the horizontal window's paging edge is a separator
-//! and two chevrons; the collapsed expandable row ends in a chevron.
-//! NAMED SIMPLIFICATION: the unfold is a window-size ease over the same
-//! 183 ms rather than per-cell slides.
+//! and two chevrons; a collapsed expandable row ends in a down chevron, a
+//! collapsed vertical expandable column in a right one.
+//! The unfold and fold play the core's `ModeTransition` as macOS plays its
+//! own: the window eases to its new size while every cell, the chevron and
+//! the keyed band move and fade along their tracks.
 
 use super::render::{DWriteMeasurer, RenderFactory, Surface};
 use super::theme::{SystemTheme, Theme};
 use super::window::{monitor_at, MonitorArea, WindowRef, BASE_DPI};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::time::Instant;
 use taigi_desktop_core::candidates::{
-    panel_frame, CandidateCellArrangement, CandidateIndexLabel, CandidateMetrics,
-    ExpandableDisplayMode, ExpandableGeometryInput, ExpandableListModel, ExpandableModeChange,
-    HorizontalListModel, HorizontalPageLayout, Point, Rect, ScrollerStyle, Size,
-    VerticalLayoutInput, VerticalListModel, MAX_DISPLAY_CANDIDATES,
+    ease_in_out, panel_frame, CandidateCellArrangement, CandidateIndexLabel, CandidateMetrics,
+    CellLayer, CollapsedLayout, ExpandableAxis, ExpandableDisplayMode, ExpandableGeometryInput,
+    ExpandableListModel, ExpandableModeChange, HorizontalListModel, HorizontalPageLayout,
+    ModeTransition, Point, Rect, ScrollerStyle, Size, VerticalLayoutInput, VerticalListModel,
+    MAX_DISPLAY_CANDIDATES,
 };
 use taigi_desktop_core::composing::CandidateCellContent;
 use taigi_desktop_core::keys::{CandidateNavigation, CandidateSlotKeySet};
@@ -34,11 +38,12 @@ use taigi_desktop_core::settings::{
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F, D2D_SIZE_U};
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1HwndRenderTarget, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ROUNDED_RECT,
+    ID2D1HwndRenderTarget, ID2D1Layer, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS,
+    D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
-use windows_numerics::Vector2;
+use windows_numerics::{Matrix3x2, Vector2};
 
 /// How much of its screen a stretched window leaves unspent
 /// (`CandidateBasePanel.screenEdgeMargin`).
@@ -78,6 +83,15 @@ const ARROW_UP_OFFSET_Y: f32 = -3.0;
 const ARROW_DOWN_OFFSET_Y: f32 = 4.0;
 /// The two strokes a chevron is drawn from.
 const CHEVRON_STROKE_WIDTH: f32 = 1.5;
+
+/// Where a chevron's tip points: the page arrows up / down, the expand
+/// chevron the way its list unfolds (down under a row, right of a column).
+#[derive(Clone, Copy)]
+enum ChevronPointing {
+    Up,
+    Down,
+    Right,
+}
 /// The scroller thumb: how far it is inset from each side of its lane, and
 /// the radius its ends are rounded to.
 const SCROLLER_THUMB_INSET: f32 = 3.0;
@@ -95,11 +109,17 @@ enum LayoutModel {
     Expandable(ExpandableListModel),
 }
 
-/// A window-size transition (the unfold / fold).
+/// The unfold / fold: the window's size ease and what plays inside it.
 struct SizeTransition {
     started: Instant,
     from: Size,
     to: Size,
+    /// The model's choreography for the change (`None` only if the model
+    /// reported a change without one).
+    plan: Option<ModeTransition>,
+    /// The eased progress the last tick set — one clock for the size and
+    /// what is drawn inside it, as the Mac's display link drives both.
+    eased: f32,
 }
 
 /// What the presenter reads back after a change.
@@ -117,20 +137,23 @@ enum CellPart {
     Annotation,
 }
 
-/// A cached DirectWrite layout is exact for its text (the cell index, the
-/// list generation being the cache's lifetime) and its box.
+/// A cached DirectWrite layout is exact for its text and its box, the list
+/// generation being the cache's lifetime. `subject` names the text: the
+/// candidate index for its own scripts, the key slot for an index label —
+/// a candidate's label changes within one list (an unfold re-numbers the
+/// grid row, a vertical list scrolls), the text a slot shows does not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct LayoutKey {
-    index: usize,
+    subject: usize,
     part: CellPart,
     width_centi: u32,
     height_centi: u32,
 }
 
 impl LayoutKey {
-    fn of(index: usize, part: CellPart, width: f32, height: f32) -> Self {
+    fn of(subject: usize, part: CellPart, width: f32, height: f32) -> Self {
         Self {
-            index,
+            subject,
             part,
             width_centi: (width * 100.0).round() as u32,
             height_centi: (height * 100.0).round() as u32,
@@ -218,6 +241,11 @@ impl CandidateWindow {
 
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
+    }
+
+    /// The caret the last shown list was anchored to.
+    pub fn caret(&self) -> RECT {
+        self.caret
     }
 
     pub fn cell_count(&self) -> usize {
@@ -441,6 +469,8 @@ impl CandidateWindow {
             }
         }
         self.layout = Some(model);
+        // A re-layout comes back in the same mode: nothing left to play.
+        self.transition = None;
         self.size = self.natural_size();
         Some(self.frame())
     }
@@ -485,16 +515,27 @@ impl CandidateWindow {
                     },
                 }))
             }
-            CandidateLayout::Expandable => LayoutModel::Expandable(ExpandableListModel::new(
-                &cell_widths(),
-                ExpandableGeometryInput {
-                    base_width: metrics.base_width(),
-                    maximum_window_width: maximum,
-                    chrome_width: Self::chevron_width(metrics),
-                    scroller_width: SCROLLER_WIDTH,
-                    item_height: metrics.item_height(),
-                },
-            )),
+            CandidateLayout::Expandable | CandidateLayout::VerticalExpandable => {
+                LayoutModel::Expandable(ExpandableListModel::new(
+                    &cell_widths(),
+                    ExpandableGeometryInput {
+                        collapsed: if layout == CandidateLayout::VerticalExpandable {
+                            CollapsedLayout::Column {
+                                metrics,
+                                primary_widths: &self.primary_widths,
+                                annotation_widths: &self.annotation_widths,
+                            }
+                        } else {
+                            CollapsedLayout::Row
+                        },
+                        base_width: metrics.base_width(),
+                        maximum_window_width: maximum,
+                        chrome_width: Self::chevron_width(metrics),
+                        scroller_width: SCROLLER_WIDTH,
+                        item_height: metrics.item_height(),
+                    },
+                ))
+            }
         }
     }
 
@@ -516,7 +557,7 @@ impl CandidateWindow {
             Some(LayoutModel::Expandable(model)) => match model.mode() {
                 ExpandableDisplayMode::Collapsed => Size {
                     width: model.collapsed_window_width(),
-                    height: metrics.item_height(),
+                    height: model.collapsed_window_height(),
                 },
                 ExpandableDisplayMode::Expanded => {
                     let geometry = model.expanded_geometry();
@@ -602,6 +643,10 @@ impl CandidateWindow {
     /// Moves the selection; answers the frame when the window's size changed
     /// (a page turn, an unfold) so the presenter re-places it.
     pub fn navigate(&mut self, direction: CandidateNavigation) -> Option<WindowFrame> {
+        // Keys wait out a mode change, as the Mac's `isAnimating` guard has them.
+        if self.is_transitioning() {
+            return None;
+        }
         let before = self.size;
         let mut change = None;
         match self.layout.as_mut()? {
@@ -616,6 +661,9 @@ impl CandidateWindow {
 
     /// A click on `index` selects it (never commits).
     pub fn select(&mut self, index: usize) -> Option<WindowFrame> {
+        if self.is_transitioning() {
+            return None;
+        }
         let before = self.size;
         let mut change = None;
         match self.layout.as_mut()? {
@@ -633,15 +681,22 @@ impl CandidateWindow {
     ) -> Option<WindowFrame> {
         let target = self.natural_size();
         if change.is_some() {
-            // The unfold / fold: a size ease over the Mac's duration.
+            // The unfold / fold, over the Mac's duration and curve.
+            let plan = match &self.layout {
+                Some(LayoutModel::Expandable(model)) => model.mode_transition().cloned(),
+                _ => None,
+            };
             self.transition = Some(SizeTransition {
                 started: Instant::now(),
                 from: before,
                 to: target,
+                plan,
+                eased: 0.0,
             });
             return Some(self.frame());
         }
-        if target != before {
+        // A scroll mid-change moves the cells under the plan: land at once.
+        if self.transition.take().is_some() || target != before {
             self.size = target;
             return Some(self.frame());
         }
@@ -650,19 +705,16 @@ impl CandidateWindow {
 
     /// Advances the transition; `Some(frame)` while it runs, `None` when done.
     fn transition_step(&mut self) -> Option<WindowFrame> {
-        let transition = self.transition.as_ref()?;
+        let transition = self.transition.as_mut()?;
         let elapsed = transition.started.elapsed().as_secs_f32();
-        let duration = ExpandableListModel::ANIMATION_DURATION_SECONDS;
-        let progress = (elapsed / duration).min(1.0);
-        // Ease-out cubic.
-        let eased = 1.0 - (1.0 - progress).powi(3);
+        let progress = (elapsed / ExpandableListModel::ANIMATION_DURATION_SECONDS).min(1.0);
+        transition.eased = ease_in_out(progress);
+        let (from, to, eased) = (transition.from, transition.to, transition.eased);
         self.size = Size {
-            width: transition.from.width + (transition.to.width - transition.from.width) * eased,
-            height: transition.from.height
-                + (transition.to.height - transition.from.height) * eased,
+            width: from.width + (to.width - from.width) * eased,
+            height: from.height + (to.height - from.height) * eased,
         };
         if progress >= 1.0 {
-            self.size = transition.to;
             self.transition = None;
         }
         Some(self.frame())
@@ -670,6 +722,12 @@ impl CandidateWindow {
 
     pub fn is_transitioning(&self) -> bool {
         self.transition.is_some()
+    }
+
+    /// The running mode change's plan and the eased progress of its last tick.
+    fn playing_transition(&self) -> Option<(&ModeTransition, f32)> {
+        let transition = self.transition.as_ref()?;
+        Some((transition.plan.as_ref()?, transition.eased))
     }
 
     // Drawing
@@ -711,33 +769,31 @@ impl CandidateWindow {
         }
     }
 
-    fn index_label(&self, candidate_index: usize) -> String {
+    /// The key slot that names `candidate_index` in the row (or column)
+    /// the keys number now, if any.
+    fn key_slot_of(&self, candidate_index: usize) -> Option<usize> {
         // Resolved once per lookup: the shift is a property of the row being
         // drawn, not of the slot scanned for it.
         let shift = CandidateIndexLabel::key_slot_shift(self.lead_cell_is_unkeyed, |slot| {
             self.candidate_index_for_slot(slot)
         });
-        for slot in 0..HorizontalPageLayout::PAGE_SIZE {
-            if self.candidate_index_for_slot(slot + shift) == Some(candidate_index) {
-                return CandidateIndexLabel::text_for_slot(slot, self.slot_key_set);
-            }
-        }
-        String::new()
+        (0..HorizontalPageLayout::PAGE_SIZE)
+            .find(|slot| self.candidate_index_for_slot(slot + shift) == Some(candidate_index))
     }
 
-    /// The layout for `part` of cell `index` in a `width` × `height` box,
-    /// built once per list and box (a page turn or an unfold changes the
-    /// box; a repaint does not).
+    /// The layout for `part` of `subject` (`LayoutKey`) in a `width` ×
+    /// `height` box, built once per list and box (a page turn or an unfold
+    /// changes the box; a repaint does not).
     fn cached_layout(
         &self,
-        index: usize,
+        subject: usize,
         part: CellPart,
         text: &str,
         font: taigi_desktop_core::candidates::FontSpec,
         width: f32,
         height: f32,
     ) -> Option<IDWriteTextLayout> {
-        let key = LayoutKey::of(index, part, width, height);
+        let key = LayoutKey::of(subject, part, width, height);
         if let Some(layout) = self.layouts.borrow().get(&key) {
             return Some(layout.clone());
         }
@@ -748,7 +804,11 @@ impl CandidateWindow {
             }
         };
         let layout = built.ok()?;
-        self.layouts.borrow_mut().insert(key, layout.clone());
+        // A mode change sizes a moving cell anew every frame: those layouts
+        // are drawn once, not kept until the next list.
+        if !self.is_transitioning() {
+            self.layouts.borrow_mut().insert(key, layout.clone());
+        }
         Some(layout)
     }
 
@@ -890,26 +950,34 @@ impl CandidateWindow {
         metrics: &CandidateMetrics,
         model: &ExpandableListModel,
     ) {
+        if let Some((plan, eased)) = self.playing_transition() {
+            self.draw_mode_transition(target, brush, metrics, model, plan, eased);
+            return;
+        }
         match model.mode() {
             ExpandableDisplayMode::Collapsed => {
-                for slot in 0..model.collapsed_row().len() {
-                    let Some(rect) = model.collapsed_cell_rect(slot) else {
-                        continue;
-                    };
-                    let index = model.collapsed_row()[slot].candidate_index;
+                // A column aligns its annotations like the vertical list.
+                let column = aligned_column(model, ExpandableDisplayMode::Collapsed, metrics);
+                for cell in model.collapsed_cells() {
                     self.draw_cell(
                         target,
                         brush,
                         metrics,
-                        index,
-                        rect,
-                        None,
-                        model.selected_index() == index,
+                        cell.candidate_index,
+                        cell.rect,
+                        column,
+                        model.selected_index() == cell.candidate_index,
                     );
                 }
+                self.draw_expandable_separators(target, brush, model, 0.0);
                 if model.has_overflow() {
-                    let chevron = model.unfold_plan().chevron_collapsed;
-                    self.draw_chevron(target, brush, metrics, chevron);
+                    self.draw_chevron(
+                        target,
+                        brush,
+                        metrics,
+                        model.chevron_rect(),
+                        model.axis().unfold_direction(),
+                    );
                 }
             }
             ExpandableDisplayMode::Expanded => {
@@ -922,9 +990,11 @@ impl CandidateWindow {
                 };
                 target.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                 let offset = model.scroll_y();
-                if let Some(row) = model.selected_row_rect() {
-                    // The row the slot keys address, tinted so its numbers read
-                    // as a group.
+                // An unfolded column aligns its annotations like the collapsed one.
+                let column = aligned_column(model, ExpandableDisplayMode::Expanded, metrics);
+                if let Some(row) = model.keyed_band_rect() {
+                    // The row (or column) the slot keys address, tinted so its
+                    // numbers read as a group.
                     self.fill(
                         target,
                         brush,
@@ -932,41 +1002,39 @@ impl CandidateWindow {
                         self.theme.separator,
                     );
                 }
-                for (row_index, row) in model.grid().rows.iter().enumerate() {
-                    for cell in row {
-                        let Some(rect) = model.grid_cell_rect(cell.candidate_index) else {
-                            continue;
-                        };
-                        let on_screen = Rect::new(rect.x, rect.y - offset, rect.width, rect.height);
-                        if on_screen.bottom() < 0.0 || on_screen.y > geometry.window_height {
-                            continue;
-                        }
-                        self.draw_cell(
-                            target,
-                            brush,
-                            metrics,
-                            cell.candidate_index,
-                            on_screen,
-                            None,
-                            model.selected_index() == cell.candidate_index,
-                        );
+                for cell in model.grid().rows.iter().flatten() {
+                    let Some(rect) = model.grid_cell_rect(cell.candidate_index) else {
+                        continue;
+                    };
+                    let on_screen = Rect::new(rect.x, rect.y - offset, rect.width, rect.height);
+                    if on_screen.bottom() < 0.0 || on_screen.y > geometry.window_height {
+                        continue;
                     }
-                    if row_index + 1 < model.grid().rows.len() {
-                        let y = (row_index + 1) as f32 * model.row_height()
-                            - ExpandableListModel::SEPARATOR_HEIGHT
-                            - offset;
-                        self.fill(
-                            target,
-                            brush,
-                            Rect::new(
-                                0.0,
-                                y,
-                                model.grid_width(),
-                                ExpandableListModel::SEPARATOR_HEIGHT,
-                            ),
-                            self.theme.separator,
-                        );
-                    }
+                    self.draw_cell(
+                        target,
+                        brush,
+                        metrics,
+                        cell.candidate_index,
+                        on_screen,
+                        column,
+                        model.selected_index() == cell.candidate_index,
+                    );
+                }
+                self.draw_expandable_separators(target, brush, model, offset);
+                // The chevron shows while another page follows; its column
+                // stays reserved on the last page.
+                if let Some(chevron) = model
+                    .has_next_page()
+                    .then(|| model.expanded_chevron_rect())
+                    .flatten()
+                {
+                    self.draw_chevron(
+                        target,
+                        brush,
+                        metrics,
+                        chevron,
+                        model.axis().unfold_direction(),
+                    );
                 }
                 if geometry.needs_scrolling {
                     self.draw_scroller(
@@ -981,6 +1049,130 @@ impl CandidateWindow {
                 target.PopAxisAlignedClip();
             }
         }
+    }
+
+    /// The hairlines of the mode the model is in: under each collapsed
+    /// column row but the last (a row has none), or under each grid row but
+    /// the last, scrolled by `offset`.
+    unsafe fn draw_expandable_separators(
+        &self,
+        target: &ID2D1HwndRenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        model: &ExpandableListModel,
+        offset: f32,
+    ) {
+        let height = ExpandableListModel::SEPARATOR_HEIGHT;
+        match model.mode() {
+            ExpandableDisplayMode::Collapsed if model.axis() == ExpandableAxis::Column => {
+                let cells = model.collapsed_cells();
+                for cell in &cells[..cells.len().saturating_sub(1)] {
+                    let rect = Rect::new(0.0, cell.rect.bottom(), cell.rect.width, height);
+                    self.fill(target, brush, rect, self.theme.separator);
+                }
+            }
+            ExpandableDisplayMode::Collapsed => {}
+            ExpandableDisplayMode::Expanded => {
+                for row in 1..model.grid().rows.len() {
+                    let y = row as f32 * model.row_height() - height - offset;
+                    let rect = Rect::new(0.0, y, model.grid_width(), height);
+                    self.fill(target, brush, rect, self.theme.separator);
+                }
+            }
+        }
+    }
+
+    /// One frame of a mode change at `eased` progress, as macOS draws it:
+    /// the band fading, the landing mode's hairlines, every cell track at
+    /// its frame and opacity, the chevron with them — all in the window's
+    /// current, easing size. Tracks are content coordinates, scrolled alike.
+    unsafe fn draw_mode_transition(
+        &self,
+        target: &ID2D1HwndRenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        metrics: &CandidateMetrics,
+        model: &ExpandableListModel,
+        plan: &ModeTransition,
+        eased: f32,
+    ) {
+        let clip = d2d_rect(Rect::new(0.0, 0.0, self.size.width, self.size.height));
+        target.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        let offset = model.scroll_y();
+        let scrolled = |rect: Rect| Rect::new(rect.x, rect.y - offset, rect.width, rect.height);
+        // One layer, pushed once per translucent drawing.
+        let layer = target.CreateLayer(None).ok();
+        if let Some(band) = plan.band {
+            self.with_opacity(target, layer.as_ref(), plan.band_alpha(eased), || {
+                self.fill(target, brush, scrolled(band), self.theme.separator);
+            });
+        }
+        self.draw_expandable_separators(target, brush, model, offset);
+        for cell in &plan.cells {
+            let (rect, alpha) = cell.track.at(eased);
+            let mode = match cell.layer {
+                CellLayer::Collapsed => ExpandableDisplayMode::Collapsed,
+                CellLayer::Expanded => ExpandableDisplayMode::Expanded,
+                CellLayer::Shared => model.mode(),
+            };
+            let column = aligned_column(model, mode, metrics);
+            self.with_opacity(target, layer.as_ref(), alpha, || {
+                self.draw_cell(
+                    target,
+                    brush,
+                    metrics,
+                    cell.candidate_index,
+                    scrolled(rect),
+                    column,
+                    model.selected_index() == cell.candidate_index,
+                );
+            });
+        }
+        let (chevron, alpha) = plan.chevron.at(eased);
+        self.with_opacity(target, layer.as_ref(), alpha, || {
+            self.draw_chevron(
+                target,
+                brush,
+                metrics,
+                scrolled(chevron),
+                model.axis().unfold_direction(),
+            );
+        });
+        target.PopAxisAlignedClip();
+    }
+
+    /// Runs `draw` at `opacity`: skipped when transparent, straight when
+    /// opaque (or with no layer), else inside `layer` — which fades colour
+    /// font glyphs too, as a brush's own opacity would not.
+    unsafe fn with_opacity(
+        &self,
+        target: &ID2D1HwndRenderTarget,
+        layer: Option<&ID2D1Layer>,
+        opacity: f32,
+        draw: impl FnOnce(),
+    ) {
+        if opacity <= 0.0 {
+            return;
+        }
+        let Some(layer) = layer.filter(|_| opacity < 1.0) else {
+            draw();
+            return;
+        };
+        let parameters = D2D1_LAYER_PARAMETERS {
+            contentBounds: D2D_RECT_F {
+                left: f32::MIN,
+                top: f32::MIN,
+                right: f32::MAX,
+                bottom: f32::MAX,
+            },
+            geometricMask: ManuallyDrop::new(None),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Matrix3x2::identity(),
+            opacity,
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS_NONE,
+        };
+        target.PushLayer(&parameters, layer);
+        draw();
+        target.PopLayer();
     }
 
     unsafe fn fill(
@@ -1003,14 +1195,14 @@ impl CandidateWindow {
         &self,
         target: &ID2D1HwndRenderTarget,
         brush: &ID2D1SolidColorBrush,
-        index: usize,
+        subject: usize,
         part: CellPart,
         text: &str,
         font: taigi_desktop_core::candidates::FontSpec,
         area: Rect,
         color: D2D1_COLOR_F,
     ) {
-        let Some(layout) = self.cached_layout(index, part, text, font, area.width, area.height)
+        let Some(layout) = self.cached_layout(subject, part, text, font, area.width, area.height)
         else {
             return;
         };
@@ -1058,18 +1250,21 @@ impl CandidateWindow {
             (theme.text, theme.secondary_text)
         };
         let padding = metrics.horizontal_padding();
-        let label = self.index_label(index);
-        if !label.is_empty() {
-            self.draw_text(
-                target,
-                brush,
-                index,
-                CellPart::Index,
-                &label,
-                metrics.index_font(),
-                Rect::new(rect.x + padding, rect.y, metrics.index_width(), rect.height),
-                secondary,
-            );
+        if let Some(slot) = self.key_slot_of(index) {
+            let label = CandidateIndexLabel::text_for_slot(slot, self.slot_key_set);
+            if !label.is_empty() {
+                // Cached by slot: the cell keeps its index, its label does not.
+                self.draw_text(
+                    target,
+                    brush,
+                    slot,
+                    CellPart::Index,
+                    &label,
+                    metrics.index_font(),
+                    Rect::new(rect.x + padding, rect.y, metrics.index_width(), rect.height),
+                    secondary,
+                );
+            }
         }
         // The text area starts after the key column — a row's candidates line
         // up with each other — except a STACKED literal cell, which names no
@@ -1181,43 +1376,39 @@ impl CandidateWindow {
         }
     }
 
-    /// A chevron drawn as two strokes, centred in `rect`; `up` flips it.
+    /// A chevron drawn as two strokes, centred on `centre`, its tip toward
+    /// `pointing`.
     unsafe fn stroke_chevron(
         &self,
         target: &ID2D1HwndRenderTarget,
         brush: &ID2D1SolidColorBrush,
         centre: (f32, f32),
         half: f32,
-        up: bool,
+        pointing: ChevronPointing,
         color: D2D1_COLOR_F,
     ) {
         brush.SetColor(&color);
         let (cx, cy) = centre;
-        let (tip_y, base_y) = if up {
-            (cy - half / 2.0, cy + half / 2.0)
-        } else {
-            (cy + half / 2.0, cy - half / 2.0)
+        let point = |x: f32, y: f32| Vector2 { X: x, Y: y };
+        let (start, tip, end) = match pointing {
+            ChevronPointing::Up => (
+                point(cx - half, cy + half / 2.0),
+                point(cx, cy - half / 2.0),
+                point(cx + half, cy + half / 2.0),
+            ),
+            ChevronPointing::Down => (
+                point(cx - half, cy - half / 2.0),
+                point(cx, cy + half / 2.0),
+                point(cx + half, cy - half / 2.0),
+            ),
+            ChevronPointing::Right => (
+                point(cx - half / 2.0, cy - half),
+                point(cx + half / 2.0, cy),
+                point(cx - half / 2.0, cy + half),
+            ),
         };
-        target.DrawLine(
-            Vector2 {
-                X: cx - half,
-                Y: base_y,
-            },
-            Vector2 { X: cx, Y: tip_y },
-            brush,
-            CHEVRON_STROKE_WIDTH,
-            None,
-        );
-        target.DrawLine(
-            Vector2 { X: cx, Y: tip_y },
-            Vector2 {
-                X: cx + half,
-                Y: base_y,
-            },
-            brush,
-            CHEVRON_STROKE_WIDTH,
-            None,
-        );
+        target.DrawLine(start, tip, brush, CHEVRON_STROKE_WIDTH, None);
+        target.DrawLine(tip, end, brush, CHEVRON_STROKE_WIDTH, None);
     }
 
     unsafe fn draw_page_arrows(
@@ -1250,7 +1441,7 @@ impl CandidateWindow {
             brush,
             (cx, cy + metrics.scaled_symbol_metric(ARROW_UP_OFFSET_Y)),
             half,
-            true,
+            ChevronPointing::Up,
             color(can_up),
         );
         self.stroke_chevron(
@@ -1258,7 +1449,7 @@ impl CandidateWindow {
             brush,
             (cx, cy + metrics.scaled_symbol_metric(ARROW_DOWN_OFFSET_Y)),
             half,
-            false,
+            ChevronPointing::Down,
             color(can_down),
         );
     }
@@ -1269,6 +1460,7 @@ impl CandidateWindow {
         brush: &ID2D1SolidColorBrush,
         metrics: &CandidateMetrics,
         rect: Rect,
+        unfold: CandidateNavigation,
     ) {
         self.fill(
             target,
@@ -1278,12 +1470,19 @@ impl CandidateWindow {
         );
         let half = metrics.scaled_symbol_metric(CHEVRON_HALF_SIZE);
         let cx = Self::symbol_centre_x(metrics, rect.x, CHEVRON_SPACING);
+        // A list unfolds only across itself: down under a row, right of a
+        // column (`ExpandableAxis::unfold_direction`).
+        let pointing = if unfold == CandidateNavigation::Right {
+            ChevronPointing::Right
+        } else {
+            ChevronPointing::Down
+        };
         self.stroke_chevron(
             target,
             brush,
             (cx, rect.y + rect.height / 2.0),
             half,
-            false,
+            pointing,
             self.theme.tertiary_text,
         );
     }
@@ -1322,12 +1521,15 @@ impl CandidateWindow {
 
     /// The candidate under `point` (DIPs), or a chrome hit.
     fn hit(&mut self, point: (f32, f32)) -> Option<WindowFrame> {
+        if self.is_transitioning() {
+            return None;
+        }
         let p = Point {
             x: point.0,
             y: point.1,
         };
         let before = self.size;
-        let metrics = self.metrics.clone()?;
+        self.metrics.as_ref()?;
         let mut change = None;
         match self.layout.as_mut()? {
             LayoutModel::Horizontal(model) => {
@@ -1352,12 +1554,21 @@ impl CandidateWindow {
                 }
             }
             LayoutModel::Expandable(model) => {
-                if model.mode() == ExpandableDisplayMode::Collapsed && model.has_overflow() {
-                    let chevron = model.unfold_plan().chevron_collapsed;
-                    if p.x >= chevron.x && p.x < chevron.right() && p.y < metrics.item_height() {
-                        change = model.expand();
-                        return self.after_change(before, change);
-                    }
+                if model.mode() == ExpandableDisplayMode::Collapsed
+                    && model.has_overflow()
+                    && model.chevron_rect().contains(p)
+                {
+                    change = model.expand();
+                    return self.after_change(before, change);
+                }
+                // An unfolded column's chevron turns to its next page.
+                if model.mode() == ExpandableDisplayMode::Expanded
+                    && model
+                        .expanded_chevron_rect()
+                        .is_some_and(|chevron| chevron.contains(p))
+                {
+                    change = model.navigate(CandidateNavigation::PageDown);
+                    return self.after_change(before, change);
                 }
                 if let Some(index) = model.hit_test(p) {
                     change = model.select(index);
@@ -1382,6 +1593,20 @@ impl CandidateWindow {
     }
 }
 
+/// The candidate column `mode`'s cells align their annotations on, with the
+/// trailing padding `draw_cell` takes; `None` for a row, whose cells keep
+/// their scripts inline.
+fn aligned_column(
+    model: &ExpandableListModel,
+    mode: ExpandableDisplayMode,
+    metrics: &CandidateMetrics,
+) -> Option<(f32, f32)> {
+    match mode {
+        ExpandableDisplayMode::Collapsed => model.collapsed_primary_column_width(),
+        ExpandableDisplayMode::Expanded => model.expanded_primary_column_width(),
+    }
+    .map(|primary| (primary, metrics.horizontal_padding()))
+}
 fn d2d_rect(rect: Rect) -> D2D_RECT_F {
     D2D_RECT_F {
         left: rect.x,

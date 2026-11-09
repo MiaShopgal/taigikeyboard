@@ -10,11 +10,11 @@ table: `docs/architecture/linux-roadmap.md`.
 | Crate | Kind | Role |
 |---|---|---|
 | `crates/taigi-linux-platform` | lib, pure, host-testable | XDG paths + install prefix, IBus key event → `KeyEventSnapshot`, settings launcher, session locale. |
-| `crates/taigi-linux-core` | lib, pure | The framework-independent half: runtime (settings, stores, lexicon, coordinator), the key path over the shared `ComposingManager`, the `Emit` effect list both shells replay, the candidate page model. |
+| `crates/taigi-linux-core` | lib, pure | The framework-independent half: runtime (settings, stores, lexicon, coordinator), raw key entry, launches and the menu over `taigi-desktop-core::session` (the key path, the `Emit` list both shells replay, the candidate page model). |
 | `crates/taigi-linux-ffi` | staticlib (the one crate overriding the workspace's `unsafe_code = "forbid"`) | The C ABI (`include/taigikeyboard.h`) the Fcitx5 addon calls: opaque runtime / engine handles, a key in, a reply of effects out. |
 | `fcitx5/` | C++ addon `libtaigikeyboard.so` (CMake) | The Fcitx5 shell: `InputMethodEngineV3` over the C ABI — client preedit, commit, candidate list, status area. Built only on Linux (`make build-fcitx5`) and in CI. |
 | `crates/taigikeyboard-ibus` | bin `ibus-engine-taigikeyboard` | The IBus shell: bus discovery, `org.freedesktop.IBus.Factory` + `Engine` objects (zbus), hand-serialised IBus wire types, replaying `taigi-linux-core`. |
-| `crates/taigikeyboard-settings` | lib + bin `taigikeyboard-settings` | The settings window (GTK 4 + libadwaita): General / Appearance / Shortcuts / Dictionary Sources / Custom Dictionary / Learning Records (+ unlisted Dictionary Search and About); `tests/panes.rs` mounts the whole window. |
+| `crates/taigikeyboard-settings` | lib + bin `taigikeyboard-settings` | The settings window (GTK 4 + libadwaita): General / Appearance / Shortcuts / Dictionary Sources (with its pinned search) / Custom Dictionary / Learning Records (+ unlisted About); `tests/panes.rs` mounts the whole window. |
 | `data/taigikeyboard.xml.in` | component XML | What ibus-daemon reads to know the engine exists (`make component` renders the prefix). |
 | `data/tw.taigikeyboard.Settings.desktop`, `data/icons/` | launcher entry + hicolor icons | The settings window in the app grid; the icons are generated with the other desktops' by `tools/desktop/make-app-icon.swift`. |
 | `packaging/control.in`, `packaging/taigikeyboard.spec.in`, `packaging/PKGBUILD.in` (+ `shlibdeps-control`, `copyright-header`) | Debian control, RPM spec, Arch PKGBUILD templates | `make deb` / `make rpm` / `make arch` pack the same install layout (`docs/architecture/linux-release.md`). |
@@ -29,7 +29,8 @@ shell-code precedent.
 make check          # from linux/: i18n check + native tests + clippy + cross build + fmt
 ```
 
-Prerequisites on macOS: `brew install gtk4 libadwaita pkgconf zig cargo-zigbuild`,
+Prerequisites on macOS: `brew install gtk4 libadwaita pkgconf`, `mise install` at the
+repository root for `zig` and `cargo-zigbuild`,
 `rustup target add x86_64-unknown-linux-gnu` (the toolchain file does it on
 first use). `zbus` and gtk4-rs both build natively on the Mac, so every crate
 is clippy-checked here; `make check-target` cross-builds the engine binary

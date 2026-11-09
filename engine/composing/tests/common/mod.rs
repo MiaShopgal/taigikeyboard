@@ -33,9 +33,10 @@ use protos::engine::{
 use ranking::FrequencyData;
 use test_support::{
     build_tkdb, build_tkwa, fst_entry, walker_cost_from_fixture_frequency, write_fst_set, TkdbRow,
+    TKDB_VERSION,
 };
 
-const RANK_NEUTRAL_BITMASK: u16 = 1u16 << 11;
+pub const RANK_NEUTRAL_BITMASK: u16 = 1u16 << 11;
 
 /// One dictionary fixture row. Empty `hanji` ⇒ TAILO (no hanji). `rowid` is
 /// the 1-based slice index, shared between `dictionary.bin` (offset-table
@@ -50,7 +51,7 @@ pub struct Row {
     pub freq: u32,
 }
 
-/// TKDB v4 record layout in the current v5 header: every row rank-neutral with no kautian
+/// TKDB v4 record layout in the current header (`TKDB_VERSION`): every row rank-neutral with no kautian
 /// provenance (subtag 0) and the walker cost its frequency had before E1
 /// ([`walker_cost_from_fixture_frequency`]).
 pub fn build_tkdb_v4(rows: &[Row]) -> Vec<u8> {
@@ -60,10 +61,28 @@ pub fn build_tkdb_v4(rows: &[Row]) -> Vec<u8> {
 /// [`build_tkdb_v4`] with each row's walker cost from `walker_cost`, for
 /// fixtures where the corpus cost and the frequency disagree on purpose.
 pub fn build_tkdb_v4_costed(rows: &[Row], walker_cost: impl Fn(&Row) -> u16) -> Vec<u8> {
+    build_tkdb_v4_rows(rows, |_| RANK_NEUTRAL_BITMASK, walker_cost)
+}
+
+/// [`build_tkdb_v4`] with each row's source bitmask from `source_bitmask`,
+/// for fixtures that pin the user's dictionary switches. Rows a plain
+/// [`build_tkdb_v4`] builds carry [`RANK_NEUTRAL_BITMASK`] (the LKK bit),
+/// which [`default_source_toggles`] keeps on.
+pub fn build_tkdb_v4_sourced(rows: &[Row], source_bitmask: impl Fn(&Row) -> u16) -> Vec<u8> {
+    build_tkdb_v4_rows(rows, source_bitmask, |row| {
+        walker_cost_from_fixture_frequency(row.freq)
+    })
+}
+
+fn build_tkdb_v4_rows(
+    rows: &[Row],
+    source_bitmask: impl Fn(&Row) -> u16,
+    walker_cost: impl Fn(&Row) -> u16,
+) -> Vec<u8> {
     let tkdb_rows: Vec<TkdbRow<'_>> = rows
         .iter()
         .map(|row| TkdbRow {
-            bitmask: RANK_NEUTRAL_BITMASK,
+            bitmask: source_bitmask(row),
             frequency: row.freq,
             syllable_count: Some(row.syll),
             kautian_subtag: Some(0),
@@ -72,7 +91,7 @@ pub fn build_tkdb_v4_costed(rows: &[Row], walker_cost: impl Fn(&Row) -> u16) -> 
             tl: row.tl,
         })
         .collect();
-    build_tkdb(b"TKDB", 5, &tkdb_rows)
+    build_tkdb(b"TKDB", TKDB_VERSION, &tkdb_rows)
 }
 
 /// `dictionary.fst` with the toneless `tl:` family, the `poj:` family
@@ -354,7 +373,7 @@ pub fn config(input_mode: &str) -> AppConfig {
 /// dictionary source on.
 pub fn config_converting(input_mode: &str) -> AppConfig {
     AppConfig {
-        hanji_conversion: Some(protos::engine::HanjiConversion { toggles: None }),
+        hanji_conversion: Some(protos::engine::HanjiConversion {}),
         ..config(input_mode)
     }
 }
@@ -411,11 +430,11 @@ pub fn selected(hanji: &str, canonical_tl: &str, count: i32, age_ms: i64) -> Sel
 
 /// A `FetchAtPos` as the engine runs it: the settings a platform sends plus
 /// the user rows the engine reads from its stores (`composing::UserRows`).
-/// The default filter is every source, as for a `FetchAtPos` without toggles.
-#[derive(Clone, Debug)]
+/// Its source filter is the config's `dictionary_sources` (absent = every
+/// source).
+#[derive(Clone, Debug, Default)]
 pub struct Fetch {
     pub now_ms: i64,
-    pub enabled_sources_bitmask: u32,
     pub literal_roman_candidate_disabled: bool,
     pub frequency: Vec<Selected>,
     pub custom: Vec<CustomEntry>,
@@ -423,24 +442,11 @@ pub struct Fetch {
     pub context: ranking::ContextRanks,
 }
 
-impl Default for Fetch {
-    fn default() -> Self {
-        Self {
-            now_ms: 0,
-            enabled_sources_bitmask: u32::MAX,
-            literal_roman_candidate_disabled: false,
-            frequency: Vec::new(),
-            custom: Vec::new(),
-            learned: Vec::new(),
-            context: ranking::ContextRanks::default(),
-        }
-    }
-}
-
-/// The sources a fresh install enables on every platform (desktop
-/// `DictionarySourceToggles::DEFAULT`; iOS / Android defaults agree).
-pub fn default_sources_bitmask() -> u32 {
-    lexicon::api::dictionary_filter_bitmask(&DictionarySourceToggles {
+/// The switches a fresh install has on every platform (desktop
+/// `DictionarySourceToggles::DEFAULT`; iOS / Android defaults agree):
+/// every other source (Taihoa and iTaigi among them) off.
+pub fn default_source_toggles() -> DictionarySourceToggles {
+    DictionarySourceToggles {
         kautian: true,
         taigitv: true,
         kungge: true,
@@ -449,7 +455,17 @@ pub fn default_sources_bitmask() -> u32 {
         lkk: true,
         dev: true,
         ..Default::default()
-    })
+    }
+}
+
+/// [`config`] carrying the user's dictionary switches, as every composing op
+/// the platforms send does (`AppConfig.dictionary_sources`) — the fetch's and
+/// the conversion's source filter.
+pub fn config_with_sources(input_mode: &str, sources: DictionarySourceToggles) -> AppConfig {
+    AppConfig {
+        dictionary_sources: Some(sources),
+        ..config(input_mode)
+    }
 }
 
 /// `rows` as the frequency map a ranking reads.
@@ -470,7 +486,6 @@ impl Fetch {
         let frequency = frequency_map(self.frequency);
         Intent::FetchAtPos {
             now_ms: self.now_ms,
-            enabled_sources_bitmask: self.enabled_sources_bitmask,
             literal_roman_candidate_disabled: self.literal_roman_candidate_disabled,
             user_rows: UserRows {
                 frequency,
@@ -484,6 +499,12 @@ impl Fetch {
 
 pub fn config_tl() -> AppConfig {
     config("tl")
+}
+
+/// [`config_tl`] carrying the user's dictionary switches
+/// ([`config_with_sources`]).
+pub fn config_tl_with_sources(sources: DictionarySourceToggles) -> AppConfig {
+    config_with_sources("tl", sources)
 }
 
 /// The `ComposingResponse.commit` a pick answers with.

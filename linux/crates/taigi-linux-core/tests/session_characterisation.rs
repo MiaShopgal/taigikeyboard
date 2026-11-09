@@ -13,7 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 use taigi_desktop_core::composing::ContextToken;
 use taigi_desktop_core::settings::keys;
 use taigi_desktop_storage::SettingsFileStore;
-use taigi_linux_core::session::{end_session, process_raw_key, EngineState, CAP_SURROUNDING_TEXT};
+use taigi_linux_core::session::{begin_session, end_session, process_raw_key, EngineState};
 use taigi_linux_core::{Emit, LookupTableContent, Runtime};
 use taigi_linux_platform::key_translation::state;
 use taigi_linux_platform::{RawKeyEvent, UserDirectories};
@@ -76,11 +76,7 @@ impl Session {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../assets/dictionaries"),
         );
         let state = EngineState {
-            capabilities: if can_delete_surrounding {
-                CAP_SURROUNDING_TEXT
-            } else {
-                0
-            },
+            can_delete_surrounding,
             ..EngineState::default()
         };
         let token = runtime.allocate_token();
@@ -145,10 +141,60 @@ fn typing_shows_the_preedit_and_a_labelled_list_led_by_the_literal() {
     // trace: cell 0 is the literal roman; the first hanji cell is 好 hó; the
     // literal takes no key (§34, as on macOS / Windows), so the Standard slot
     // keys label the page from cell 1; vertical, cursor on the literal.
-    assert_eq!(&table.candidates[..2], ["ho", "好 hó"]);
+    assert_eq!(&table.joined_candidates()[..2], ["ho", "好 hó"]);
     assert_eq!(table.labels, ["", "q", "w", "d", "f", "z", "x", "v", "y"]);
     assert_eq!((table.cursor, table.cursor_visible), (0, true));
     assert_eq!((table.page_size, table.vertical), (9, true));
+}
+
+/// The framework has one table to draw (#684): a wanted Telex guide gives way
+/// to the candidates and comes back when they go, by commit or by cancel.
+#[test]
+fn the_telex_guide_gives_way_to_the_candidates_and_returns() {
+    let _serial = serial();
+    let mut session = Session::new(false, true);
+    let (handled, emits) = session.press_with(u32::from(b'/'), state::CONTROL | state::MOD1);
+    assert!(handled);
+    let [Emit::LookupTable(guide)] = emits.as_slice() else {
+        panic!("the chord raises the guide: {emits:?}");
+    };
+    let guide = guide.clone();
+    assert!(!guide.cursor_visible);
+
+    let list = session.type_word("ho");
+    assert!(list.cursor_visible, "the candidates hold the table");
+
+    assert_eq!(
+        session.press(ESCAPE),
+        [Emit::ClearPreedit, Emit::LookupTable(guide.clone())]
+    );
+
+    session.type_word("ho");
+    assert_eq!(
+        session.press(RETURN),
+        [
+            Emit::ClearPreedit,
+            commit("ho"),
+            Emit::LookupTable(guide.clone())
+        ]
+    );
+
+    assert_eq!(
+        end_session(&session.runtime, session.token, &mut session.state),
+        [Emit::HideLookupTable]
+    );
+    assert_eq!(
+        begin_session(&session.runtime, &mut session.state),
+        [Emit::LookupTable(guide)],
+        "the next focus brings it back from the stored setting"
+    );
+}
+
+#[test]
+fn begin_session_shows_nothing_unless_the_guide_is_wanted() {
+    let _serial = serial();
+    let mut session = Session::new(false, true);
+    assert!(begin_session(&session.runtime, &mut session.state).is_empty());
 }
 
 #[test]
@@ -327,7 +373,7 @@ fn the_symbol_picker_neither_swaps_nor_keeps_the_arm() {
     let [Emit::LookupTable(picker)] = emits.as_slice() else {
         panic!("Ctrl+Alt+, opens the picker, got {emits:?}");
     };
-    let first = picker.candidates[0].clone();
+    let first = picker.joined_candidates()[0].clone();
     assert_eq!(
         session.press(RETURN),
         [commit(&first), Emit::HideLookupTable]
@@ -385,7 +431,7 @@ fn the_literal_stays_unkeyed_when_a_switch_presents_the_list_again() {
     let Some(Emit::LookupTable(table)) = emits.first() else {
         panic!("the refetched list is shown, got {emits:?}");
     };
-    assert_eq!(table.candidates[0], "ho");
+    assert_eq!(table.joined_candidates()[0], "ho");
     assert_eq!(table.labels[..2], ["", "q"]);
 
     // Show Typed Text First OFF: the list leads with a dictionary cell, which
@@ -398,7 +444,7 @@ fn the_literal_stays_unkeyed_when_a_switch_presents_the_list_again() {
     let Some(Emit::LookupTable(table)) = emits.first() else {
         panic!("the refetched list is shown, got {emits:?}");
     };
-    assert_ne!(table.candidates[0], "ho");
+    assert_ne!(table.joined_candidates()[0], "ho");
     assert_eq!(table.labels[0], "q");
 }
 
@@ -497,7 +543,7 @@ fn tps_opens_the_table_on_demand_and_the_number_row_picks() {
     let [Emit::LookupTable(table)] = opened.as_slice() else {
         panic!("↓ opens the table: {opened:?}");
     };
-    let second = table.candidates[1].clone();
+    let second = table.joined_candidates()[1].clone();
     assert_eq!(session.press(ESCAPE), [Emit::HideLookupTable]);
     let reopened = session.press(DOWN);
     assert!(

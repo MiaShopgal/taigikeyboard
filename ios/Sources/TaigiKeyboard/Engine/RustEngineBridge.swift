@@ -142,6 +142,11 @@ public enum RustEngineBridge {
     /// settings hold them: the engine applies the TPS fold itself
     /// (`AppConfig::renders_hanji_first` / `rendered_syllable_joiner`,
     /// `engine/protos/src/lib.rs`).
+    ///
+    /// `dictionarySources` is the user's dictionary switches. Only composing sends
+    /// them — the fetch and the nailed-join compound oracle (#772) read
+    /// them as the source filter; `nil` leaves the
+    /// field absent, which the engine reads as every source on.
     // CROSS-PLATFORM INVARIANT — mirrors android/app/src/main/java/com/siansiansu/taigikeyboard/engine/EngineAppConfig.kt appConfig.
     // Drift causes silent divergence (one platform renders TPS or the swap differently).
     static func appConfig(
@@ -152,6 +157,10 @@ public enum RustEngineBridge {
         candidateDisplayMode: CandidateDisplayMode = .sideBySide,
         syllableSeparator: SyllableSeparator = .hyphen,
         isTpsOrMappedToER: Bool = false,
+        dictionarySources: Taigi_Engine_DictionarySourceToggles? = nil,
+        // Invert of the Enable Custom Dictionary setting: the engine reads the
+        // user's dictionary only with it on. Default `false` = read it.
+        isCustomDictionaryDisabled: Bool = false,
     ) -> Taigi_Engine_AppConfig {
         var cfg = Taigi_Engine_AppConfig()
         // The raw values are the engine's `input_mode` strings.
@@ -167,6 +176,10 @@ public enum RustEngineBridge {
         cfg.candidateDisplayMode = candidateDisplayMode.engineValue
         cfg.syllableSeparator = syllableSeparator.engineValue
         cfg.tpsOrMapsToEr = isTpsOrMappedToER
+        if let dictionarySources {
+            cfg.dictionarySources = dictionarySources
+        }
+        cfg.customDictionaryDisabled = isCustomDictionaryDisabled
         return cfg
     }
 }

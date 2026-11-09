@@ -1,6 +1,6 @@
 //! Lexicon slice of the engine bridge: loading the dictionary data and
 //! resolving the user's source toggles into the engine's bitmask, and the
-//! dictionary-search page's two lookups. Twin of iOS
+//! Manage Dictionaries search's two lookups. Twin of iOS
 //! `RustEngineBridge+Lexicon.swift`.
 
 use std::collections::BTreeSet;
@@ -47,7 +47,8 @@ pub enum DictionarySource {
 
 impl DictionarySource {
     /// The badge a search result wears for this source: the three
-    /// supplements share one word, the custom dictionary its pane's name.
+    /// supplements and the custom dictionary share one, as on iOS and
+    /// Android (`DictionarySearchPanel.tagKey`, `DictionarySource.tagKey`).
     pub fn badge_key(self) -> StringKey {
         match self {
             Self::Kautian => StringKey::DictionaryKautianTag,
@@ -59,8 +60,9 @@ impl DictionarySource {
             Self::Kungge => StringKey::DictionaryKunggeTag,
             Self::Stti => StringKey::DictionarySttiTag,
             Self::Lkk => StringKey::DictionaryLkkTag,
-            Self::Khpoo | Self::Khiin | Self::Dev => StringKey::DictionarySupplementSectionTitle,
-            Self::Custom => StringKey::DictionaryCustomDictionary,
+            Self::Khpoo | Self::Khiin | Self::Dev | Self::Custom => {
+                StringKey::DictionarySupplementSectionTitle
+            }
         }
     }
 
@@ -211,7 +213,7 @@ pub(crate) fn dictionary_toggles(toggles: &DictionarySourceToggles) -> WireDicti
     }
 }
 
-/// One dictionary record as the Dictionary Search page lists it.
+/// One dictionary record as the Manage Dictionaries search lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LexiconRow {
     pub id: i64,
@@ -245,7 +247,7 @@ fn wire_input_mode(mode: InputMode) -> i32 {
     }
 }
 
-/// The Dictionary Search page's all-source romanization lookup.
+/// The Manage Dictionaries search's all-source romanization lookup.
 pub fn search_with_sources(
     input: &str,
     mode: InputMode,
@@ -274,7 +276,7 @@ pub fn search_with_sources(
     }
 }
 
-/// The Dictionary Search page's hanji-prefix lookup.
+/// The Manage Dictionaries search's hanji-prefix lookup.
 pub fn search_by_hanji(
     query: &str,
     mode: InputMode,

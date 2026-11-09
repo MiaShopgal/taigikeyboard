@@ -32,11 +32,23 @@ use crate::settings::InputMode;
 /// takeover's re-derivation included — on a thread of its own. `true` once the engine acknowledged
 /// the open; it does not promise that every store is usable yet.
 pub fn open(directory: &Path, platform: DesktopPlatform) -> bool {
+    open_with(directory, journal(platform), true)
+}
+
+/// Opens the engine's stores over `directory` and finishes before it
+/// returns, under a rollback journal: the web, which has no thread to finish
+/// on and whose files sit in SQLite's memory VFS, with no shared memory for
+/// WAL. `true` once the engine acknowledged the open.
+pub fn open_on_this_thread(directory: &Path) -> bool {
+    open_with(directory, UserDataJournal::Delete, false)
+}
+
+fn open_with(directory: &Path, journal: UserDataJournal, in_background: bool) -> bool {
     let Some(answer) = user_data(
         user_data_request::Method::Open(OpenUserData {
             directory: directory.display().to_string(),
-            journal: journal(platform) as i32,
-            in_background: true,
+            journal: journal as i32,
+            in_background,
             ..OpenUserData::default()
         }),
         "userDataOpen",
@@ -364,18 +376,23 @@ pub fn delete_learning_record(record: LearningRecord) -> Result<bool, UserDataEr
     }
 }
 
-/// Makes `record`'s word a custom word — a learned phrase is then forgotten,
-/// a frequency row stays; a word the dictionary holds already is not added
-/// twice. A refusal (no search key, a full dictionary) is
-/// `UserDataError::Refused` and keeps the row.
+/// Makes `record`'s word a custom word, filed as `roman` / `hanji` (the
+/// word as the user edited it; the engine trims both) — a learned phrase is
+/// then forgotten, a frequency row stays; a word the dictionary holds
+/// already is not added twice. A refusal (no romanization, no search key, a
+/// full dictionary) is `UserDataError::Refused` and keeps the row.
 pub fn add_learning_record_to_custom_dictionary(
     record: LearningRecord,
+    roman: &str,
+    hanji: &str,
 ) -> Result<(), UserDataError> {
     let op = "learningRecordAddToCustomDictionary";
     match page_request(
         user_data_request::Method::AddLearningRecordToCustomDictionary(
             AddLearningRecordToCustomDictionary {
                 record: Some(record),
+                roman: Some(roman.to_owned()),
+                hanji: Some(hanji.to_owned()),
             },
         ),
         op,

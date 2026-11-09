@@ -387,22 +387,17 @@ public extension RustEngineBridge {
         // (proto3-absent sentinel → engine prepends the literal-roman
         // candidate, the pre-toggle always-on behaviour for callers/tests).
         literalRomanCandidateDisabled: Bool = false,
-        // Invert of the Enable Custom Dictionary setting: the engine reads the
-        // user's dictionary only with it on. Default `false` = read it.
-        customDictionaryDisabled: Bool = false,
     ) -> ContinuousFetchResult {
         var payload = Taigi_Engine_FetchAtPos()
         payload.nowMs = nowMs
-        // The dictionary toggles the Tab3 browse path resolves too; the engine
-        // turns them into its source filter (every dictionary off offers no
-        // dictionary candidates, §57).
-        payload.toggles = dictionaryTogglesProto(DictionaryToggles(from: settings))
         payload.literalRomanCandidateDisabled = literalRomanCandidateDisabled
-        payload.customDictionaryDisabled = customDictionaryDisabled
         return composingFetchDispatch(
             method: .fetchAtPos(payload),
             op: "composingFetchAtPos",
             generation: generation,
+            // Carries the dictionary toggles the Tab3 browse path resolves too as
+            // the fetch's source filter (every dictionary off offers no
+            // dictionary candidates, §57).
             config: continuousAppConfig(settings),
         )
     }
@@ -492,6 +487,8 @@ public extension RustEngineBridge {
             candidateDisplayMode: settings.candidateDisplayMode,
             syllableSeparator: settings.syllableSeparator,
             isTpsOrMappedToER: settings.isTpsOrMappedToER,
+            dictionarySources: dictionaryTogglesProto(DictionaryToggles(from: settings)),
+            isCustomDictionaryDisabled: !settings.isCustomDictEnabled,
         )
     }
 

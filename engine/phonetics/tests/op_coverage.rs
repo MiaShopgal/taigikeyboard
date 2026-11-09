@@ -9,8 +9,8 @@ use protos::engine::phonetics_request::Method;
 use protos::engine::phonetics_response::Result as PhonResult;
 use protos::engine::{
     AppConfig, BoolResult, ExternalLookupDigitForm, GetToneVariations, IsAttachingPunctuation,
-    IsTpsToneMark, PhoneticsRequest, PhoneticsResponse, StringResult, TlDisplayToTps, TlToPoj,
-    ToneVariationsResult, TpsAdjustResult, TpsInputAdjust,
+    IsJoinerPunctuation, IsTpsToneMark, PhoneticsRequest, PhoneticsResponse, StringResult,
+    TlDisplayToTps, TlToPoj, ToneVariationsResult, TpsAdjustResult, TpsInputAdjust,
 };
 
 // ---------------- helpers ----------------
@@ -86,6 +86,8 @@ fn tl_config() -> AppConfig {
         force_lowercase_nasal_marker: false,
         tps_or_maps_to_er: false,
         hanji_conversion: None,
+        dictionary_sources: None,
+        custom_dictionary_disabled: false,
     }
 }
 
@@ -101,6 +103,8 @@ fn poj_config(oo: bool, nn: bool) -> AppConfig {
         force_lowercase_nasal_marker: false,
         tps_or_maps_to_er: false,
         hanji_conversion: None,
+        dictionary_sources: None,
+        custom_dictionary_disabled: false,
     }
 }
 
@@ -429,6 +433,18 @@ fn is_attaching_punctuation_answers_through_the_dispatcher() {
         ("", false),
     ] {
         let resp = run(Method::IsAttachingPunctuation(IsAttachingPunctuation {
+            text: text.to_string(),
+        }));
+        assert_eq!(bool_result(&resp), expected, "{text:?}");
+    }
+}
+
+#[test]
+fn is_joiner_punctuation_answers_through_the_dispatcher() {
+    // trace: `punctuation::is_joiner_punctuation` compares to
+    // `tps::KHINSIANN_DOT` (U+00B7); `?` attaches, it does not join.
+    for (text, expected) in [("\u{00b7}", true), ("?", false), ("-", false), ("", false)] {
+        let resp = run(Method::IsJoinerPunctuation(IsJoinerPunctuation {
             text: text.to_string(),
         }));
         assert_eq!(bool_result(&resp), expected, "{text:?}");

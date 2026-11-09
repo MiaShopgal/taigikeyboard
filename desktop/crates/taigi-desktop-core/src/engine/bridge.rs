@@ -6,7 +6,7 @@ use prost::Message;
 use protos::engine::{request, response, AppConfig, ErrorCode, HanjiConversion, Request, Response};
 
 use super::lexicon::dictionary_toggles;
-use crate::settings::{EngineSettings, InputMode};
+use crate::settings::EngineSettings;
 
 static LAST_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -99,10 +99,15 @@ pub(super) fn record_failure(op: &str, message: &str) {
 /// that renders the composition and by every next-word request, matching iOS;
 /// macOS sends this same builder's config.
 ///
-/// Under TPS every request asks for the Hanji conversion of the preedit
-/// (`desktop-tps-hanji-conversion-roadmap.md` H2), with the user's dictionary
-/// switches as its source filter: a key carries no fetch. The engine reads it
-/// only for a TPS composition, so TL and POJ requests never carry it.
+/// Under TPS with Show Candidate Window on, every request asks for the Hanji
+/// conversion of the preedit (`desktop-tps-hanji-conversion-roadmap.md` H2;
+/// `EngineSettings::is_hanji_conversion_enabled`). The engine reads it only
+/// for a TPS composition, so TL and POJ requests never carry it.
+///
+/// Every request carries the user's dictionary switches: the one source
+/// filter the fetch, the conversion walk (a key carries no fetch) and the
+/// nailed-join compound oracle read (#772) — and the custom-dictionary
+/// setting, which both the fetch and the conversion walk read.
 pub(super) fn app_config(settings: &EngineSettings) -> AppConfig {
     AppConfig {
         input_mode: settings.input_mode.wire().to_owned(),
@@ -113,9 +118,11 @@ pub(super) fn app_config(settings: &EngineSettings) -> AppConfig {
         syllable_separator: settings.syllable_separator.wire() as i32,
         force_lowercase_nasal_marker: !settings.is_nasal_marker_uppercase_enabled,
         tps_or_maps_to_er: super::TPS_OR_MAPS_TO_ER,
-        hanji_conversion: (settings.input_mode == InputMode::Tps).then(|| HanjiConversion {
-            toggles: Some(dictionary_toggles(&settings.dictionary_sources)),
-        }),
+        hanji_conversion: settings
+            .is_hanji_conversion_enabled
+            .then_some(HanjiConversion {}),
+        dictionary_sources: Some(dictionary_toggles(&settings.dictionary_sources)),
+        custom_dictionary_disabled: !settings.is_custom_dict_enabled,
         ..Default::default()
     }
 }
@@ -225,25 +232,50 @@ mod tests {
     }
 
     #[test]
-    fn only_tps_asks_for_the_hanji_conversion_with_the_dictionary_switches() {
-        for mode in [InputMode::Tl, InputMode::Poj] {
-            let settings = EngineSettings {
-                input_mode: mode,
-                ..EngineSettings::default()
-            };
-            assert_eq!(app_config(&settings).hanji_conversion, None, "{mode:?}");
-        }
-        let mut settings = EngineSettings {
+    fn the_conversion_switch_carries_the_hanji_conversion_request() {
+        // trace: `app_config` maps `is_hanji_conversion_enabled` straight onto
+        // `hanji_conversion`; which settings turn it on is
+        // `SettingsDocument::engine_settings`'s rule.
+        let settings = EngineSettings {
             input_mode: InputMode::Tps,
             ..EngineSettings::default()
         };
-        settings.dictionary_sources.itaigi = false;
-        let toggles = app_config(&settings)
-            .hanji_conversion
-            .expect("TPS asks for the conversion")
-            .toggles
-            .expect("with the dictionary switches");
-        assert!(!toggles.itaigi && toggles.kautian);
+        assert_eq!(app_config(&settings).hanji_conversion, None);
+        let converting = EngineSettings {
+            is_hanji_conversion_enabled: true,
+            ..settings
+        };
+        assert_eq!(
+            app_config(&converting).hanji_conversion,
+            Some(HanjiConversion {})
+        );
+    }
+
+    #[test]
+    fn the_custom_dictionary_setting_rides_the_config() {
+        let on = EngineSettings::default();
+        assert!(on.is_custom_dict_enabled);
+        assert!(!app_config(&on).custom_dictionary_disabled);
+        let off = EngineSettings {
+            is_custom_dict_enabled: false,
+            ..EngineSettings::default()
+        };
+        assert!(app_config(&off).custom_dictionary_disabled);
+    }
+
+    #[test]
+    fn every_mode_carries_the_dictionary_switches() {
+        for mode in [InputMode::Tl, InputMode::Poj, InputMode::Tps] {
+            let mut settings = EngineSettings {
+                input_mode: mode,
+                ..EngineSettings::default()
+            };
+            settings.dictionary_sources.taihoa = false;
+            let sources = app_config(&settings)
+                .dictionary_sources
+                .expect("the compound oracle reads the switches");
+            assert!(!sources.taihoa && sources.kautian, "{mode:?}");
+        }
     }
 
     #[test]

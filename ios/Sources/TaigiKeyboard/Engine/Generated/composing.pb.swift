@@ -516,16 +516,13 @@ public nonisolated struct Taigi_Engine_Reset: Sendable {
 /// `user_weight = 0.0` for every candidate — see
 /// `engine/ranking/src/score.rs::decayed_user_weight_delta`.
 ///
-/// `toggles` are the user's dictionary switches — the same message Tab3
-/// browse (`DictionaryFiltersRequest`) and `PredictNext` carry. The engine
-/// resolves them into the source filter itself with the encoder behind
-/// `DictionaryFilters`, so keyboard candidates honour the same 12 source
-/// toggles + kautian subcollection toggles as browse and no platform
-/// computes a bitmask. Absent `toggles` keeps every source on — a default for
-/// test fixtures, like fields 6 and 8: the engine ships inside each app, so
-/// no platform build without the field reaches it, and every platform in this
-/// repository sends them. Toggles with every dictionary off offer no
-/// dictionary candidates (§57).
+/// The source filter is the request config's `AppConfig.dictionary_sources`
+/// — the user's dictionary switches, the same message Tab3 browse
+/// (`DictionaryFiltersRequest`) and `PredictNext` carry. The engine resolves
+/// them with the encoder behind `DictionaryFilters`, so keyboard candidates
+/// honour the same 12 source toggles + kautian subcollection toggles as browse
+/// and no platform computes a bitmask. Absent switches keep every source on;
+/// every dictionary off offers no dictionary candidates (§57).
 ///
 /// §34 / S22 — `literal_roman_candidate_disabled` gates the always-on
 /// preedit-literal roman candidate (the `derived_display` WYSIWYG row that
@@ -560,25 +557,9 @@ public nonisolated struct Taigi_Engine_FetchAtPos: Sendable {
 
   public var literalRomanCandidateDisabled: Bool = false
 
-  /// The user's "use my custom dictionary" setting, OFF: the engine reads no
-  /// custom-dictionary rows for this fetch. Negative like field 6, so an
-  /// un-wired build keeps the dictionary on.
-  public var customDictionaryDisabled: Bool = false
-
-  public var toggles: Taigi_Engine_DictionarySourceToggles {
-    get {_toggles ?? Taigi_Engine_DictionarySourceToggles()}
-    set {_toggles = newValue}
-  }
-  /// Returns true if `toggles` has been explicitly set.
-  public var hasToggles: Bool {self._toggles != nil}
-  /// Clears the value of `toggles`. Subsequent reads from it will return its default value.
-  public mutating func clearToggles() {self._toggles = nil}
-
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
-
-  fileprivate var _toggles: Taigi_Engine_DictionarySourceToggles? = nil
 }
 
 /// v3.5.8 Phase 6 — commit a candidate segment in `Phase::Continuous`. The
@@ -749,14 +730,15 @@ public nonisolated struct Taigi_Engine_CommitResolution: Sendable {
   public init() {}
 }
 
-/// Desktop Telex scheme: one key from `x v y d w q` (tones 1/4 2/8 3 5 7 9 —
+/// Desktop Telex scheme: one key from `x v y d z w q` (tones 1/4 2/8 3 5 6 7 9 —
 /// `x` and `v` write the checked tone after a stop coda `p t k h`, the open
-/// tone otherwise), `z` (affricate initial `ts` / `ch` by
-/// `AppConfig.input_mode`) or `f` (hyphen), either case. The engine edits the
-/// pending tail — appending or replacing the trailing tone digit — and keeps
-/// the buffer numeric-tone.
-/// A key that changes nothing (same tone twice, tone on an empty tail) is a
-/// no-op. Idle + `z` enters composing with the expansion.
+/// tone otherwise), `c` (affricate initial `ts` / `ch` by
+/// `AppConfig.input_mode`), `h` (itself, unless the tail ends in `tsh` / `chh`)
+/// or `f` (hyphen), either case. The engine edits the pending tail — appending
+/// or replacing the trailing tone digit — and keeps the buffer numeric-tone.
+/// A key that changes nothing (same tone twice, tone on an empty tail, `h` after
+/// `tsh` / `chh`) is a no-op. Idle + `c` or `h` enters composing with the text;
+/// idle + `f` inserts a literal `-` and stays idle, as a leading `-` does.
 public nonisolated struct Taigi_Engine_TelexKey: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -971,9 +953,11 @@ public nonisolated struct Taigi_Engine_ContinuousResponse: Sendable {
 /// TL transform. TL / POJ users → ASCII bytes; TPS users → Bopomofo
 /// bytes (Phase 6 dispatcher converts TPS spans to canonical TL FST
 /// keys for lookup but emits the span back in the user-facing TPS byte
-/// space). The platform sends it back as `CommitContinuous.consumed_bytes`;
-/// where the listed word starts is the engine's own knowledge
-/// (`composing::conversion::word_list_start`).
+/// space). Under a Hanji conversion at the tail's start the list reads the
+/// last nailed segment's raw text followed by `raw`, and the offset is in
+/// that text, which the pick re-opens as the tail. The platform sends it back
+/// as `CommitContinuous.consumed_bytes`; where the listed word starts is the
+/// engine's own knowledge (`composing::conversion::word_list_start`).
 ///
 /// v3.5.8 Phase 9 Item 5 — `roman` + `hanji` are display-only
 /// sidechannels added so platform UI can build dual-line cells
@@ -1864,7 +1848,7 @@ nonisolated extension Taigi_Engine_Reset: SwiftProtobuf.Message, SwiftProtobuf._
 
 nonisolated extension Taigi_Engine_FetchAtPos: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FetchAtPos"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{3}now_ms\0\u{4}\u{3}literal_roman_candidate_disabled\0\u{4}\u{2}custom_dictionary_disabled\0\u{1}toggles\0\u{b}position\0\u{b}frequency_entries\0\u{b}custom_entries\0\u{b}learned_entries\0\u{b}enabled_sources_bitmask\0\u{c}\u{1}\u{1}\u{c}\u{2}\u{1}\u{c}\u{4}\u{1}\u{c}\u{7}\u{1}\u{c}\u{5}\u{1}")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{3}now_ms\0\u{4}\u{3}literal_roman_candidate_disabled\0\u{b}position\0\u{b}frequency_entries\0\u{b}custom_entries\0\u{b}learned_entries\0\u{b}enabled_sources_bitmask\0\u{b}custom_dictionary_disabled\0\u{b}toggles\0\u{c}\u{1}\u{1}\u{c}\u{2}\u{1}\u{c}\u{4}\u{1}\u{c}\u{7}\u{1}\u{c}\u{5}\u{1}\u{c}\u{8}\u{1}\u{c}\u{9}\u{1}")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1874,38 +1858,24 @@ nonisolated extension Taigi_Engine_FetchAtPos: SwiftProtobuf.Message, SwiftProto
       switch fieldNumber {
       case 3: try { try decoder.decodeSingularInt64Field(value: &self.nowMs) }()
       case 6: try { try decoder.decodeSingularBoolField(value: &self.literalRomanCandidateDisabled) }()
-      case 8: try { try decoder.decodeSingularBoolField(value: &self.customDictionaryDisabled) }()
-      case 9: try { try decoder.decodeSingularMessageField(value: &self._toggles) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
     if self.nowMs != 0 {
       try visitor.visitSingularInt64Field(value: self.nowMs, fieldNumber: 3)
     }
     if self.literalRomanCandidateDisabled != false {
       try visitor.visitSingularBoolField(value: self.literalRomanCandidateDisabled, fieldNumber: 6)
     }
-    if self.customDictionaryDisabled != false {
-      try visitor.visitSingularBoolField(value: self.customDictionaryDisabled, fieldNumber: 8)
-    }
-    try { if let v = self._toggles {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 9)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Taigi_Engine_FetchAtPos, rhs: Taigi_Engine_FetchAtPos) -> Bool {
     if lhs.nowMs != rhs.nowMs {return false}
     if lhs.literalRomanCandidateDisabled != rhs.literalRomanCandidateDisabled {return false}
-    if lhs.customDictionaryDisabled != rhs.customDictionaryDisabled {return false}
-    if lhs._toggles != rhs._toggles {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

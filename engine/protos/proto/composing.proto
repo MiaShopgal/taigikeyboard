@@ -138,16 +138,13 @@ message Reset {}
 // `user_weight = 0.0` for every candidate — see
 // `engine/ranking/src/score.rs::decayed_user_weight_delta`.
 //
-// `toggles` are the user's dictionary switches — the same message Tab3
-// browse (`DictionaryFiltersRequest`) and `PredictNext` carry. The engine
-// resolves them into the source filter itself with the encoder behind
-// `DictionaryFilters`, so keyboard candidates honour the same 12 source
-// toggles + kautian subcollection toggles as browse and no platform
-// computes a bitmask. Absent `toggles` keeps every source on — a default for
-// test fixtures, like fields 6 and 8: the engine ships inside each app, so
-// no platform build without the field reaches it, and every platform in this
-// repository sends them. Toggles with every dictionary off offer no
-// dictionary candidates (§57).
+// The source filter is the request config's `AppConfig.dictionary_sources`
+// — the user's dictionary switches, the same message Tab3 browse
+// (`DictionaryFiltersRequest`) and `PredictNext` carry. The engine resolves
+// them with the encoder behind `DictionaryFilters`, so keyboard candidates
+// honour the same 12 source toggles + kautian subcollection toggles as browse
+// and no platform computes a bitmask. Absent switches keep every source on;
+// every dictionary off offers no dictionary candidates (§57).
 //
 // §34 / S22 — `literal_roman_candidate_disabled` gates the always-on
 // preedit-literal roman candidate (the `derived_display` WYSIWYG row that
@@ -188,11 +185,14 @@ message FetchAtPos {
   reserved "enabled_sources_bitmask";
   int64 now_ms                             = 3;
   bool literal_roman_candidate_disabled    = 6;
-  // The user's "use my custom dictionary" setting, OFF: the engine reads no
-  // custom-dictionary rows for this fetch. Negative like field 6, so an
-  // un-wired build keeps the dictionary on.
-  bool custom_dictionary_disabled          = 8;
-  DictionarySourceToggles toggles          = 9;
+  // Was the user's "use my custom dictionary" setting; the fetch reads
+  // `AppConfig.custom_dictionary_disabled` instead (2026-11-09).
+  reserved 8;
+  reserved "custom_dictionary_disabled";
+  // Was the user's dictionary switches; the fetch reads
+  // `AppConfig.dictionary_sources` instead (2026-11-08).
+  reserved 9;
+  reserved "toggles";
 }
 
 // v3.5.8 Phase 6 — commit a candidate segment in `Phase::Continuous`. The
@@ -339,14 +339,15 @@ enum CommitOutcome {
   COMMIT_OUTCOME_IGNORED     = 3;  // nothing changed (stale generation, rejected pick)
 }
 
-// Desktop Telex scheme: one key from `x v y d w q` (tones 1/4 2/8 3 5 7 9 —
+// Desktop Telex scheme: one key from `x v y d z w q` (tones 1/4 2/8 3 5 6 7 9 —
 // `x` and `v` write the checked tone after a stop coda `p t k h`, the open
-// tone otherwise), `z` (affricate initial `ts` / `ch` by
-// `AppConfig.input_mode`) or `f` (hyphen), either case. The engine edits the
-// pending tail — appending or replacing the trailing tone digit — and keeps
-// the buffer numeric-tone.
-// A key that changes nothing (same tone twice, tone on an empty tail) is a
-// no-op. Idle + `z` enters composing with the expansion.
+// tone otherwise), `c` (affricate initial `ts` / `ch` by
+// `AppConfig.input_mode`), `h` (itself, unless the tail ends in `tsh` / `chh`)
+// or `f` (hyphen), either case. The engine edits the pending tail — appending
+// or replacing the trailing tone digit — and keeps the buffer numeric-tone.
+// A key that changes nothing (same tone twice, tone on an empty tail, `h` after
+// `tsh` / `chh`) is a no-op. Idle + `c` or `h` enters composing with the text;
+// idle + `f` inserts a literal `-` and stays idle, as a leading `-` does.
 message TelexKey { string key = 1; }
 
 // One TPS key, typed at the caret: a glyph or tone mark, or U+0020 for the
@@ -472,9 +473,11 @@ message ContinuousResponse {
 // TL transform. TL / POJ users → ASCII bytes; TPS users → Bopomofo
 // bytes (Phase 6 dispatcher converts TPS spans to canonical TL FST
 // keys for lookup but emits the span back in the user-facing TPS byte
-// space). The platform sends it back as `CommitContinuous.consumed_bytes`;
-// where the listed word starts is the engine's own knowledge
-// (`composing::conversion::word_list_start`).
+// space). Under a Hanji conversion at the tail's start the list reads the
+// last nailed segment's raw text followed by `raw`, and the offset is in
+// that text, which the pick re-opens as the tail. The platform sends it back
+// as `CommitContinuous.consumed_bytes`; where the listed word starts is the
+// engine's own knowledge (`composing::conversion::word_list_start`).
 //
 // v3.5.8 Phase 9 Item 5 — `roman` + `hanji` are display-only
 // sidechannels added so platform UI can build dual-line cells

@@ -77,8 +77,10 @@ pub struct CustomDictionaryIdentity {
 /// in Unicode NFC so a decomposed import (`li` + U+0301) and a precomposed
 /// keyboard `lí` are one stored form, with each syllable's tone digit written
 /// as its mark (`tsui2-ong5-tshut` is stored `tsuí-ông-tshut`; `stored_roman`),
-/// and the Hanji it stands for, which may be empty. Timestamps are the stored
-/// `yyyy-MM-dd HH:mm:ss` UTC text. CROSS-PLATFORM INVARIANT — the stored
+/// and the Hanji it stands for, which may be empty: a word written only in
+/// romanization has none, so a Hanji column spelling one (`lán,lán`) is stored empty,
+/// as the dictionary pipeline stores its rows (`stored_hanji`). Timestamps
+/// are the stored `yyyy-MM-dd HH:mm:ss` UTC text. CROSS-PLATFORM INVARIANT — the stored
 /// shape is the engine's; iOS `CustomDictionaryEntry` / macOS
 /// `CustomDictionaryRow` are page views of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +129,10 @@ pub struct CustomDictionaryStore {
     derive_search_keys: SearchKeyDeriver,
     entry_limit: usize,
 }
+
+/// Newest edit first; `id` breaks ties (an import stamps thousands of rows with
+/// one second), so pages cut by offset never skip or repeat a row.
+const LISTED_ORDER: &str = "updated_at DESC, id";
 
 impl CustomDictionaryStore {
     /// Most entries one dictionary holds, on every platform.
@@ -202,6 +208,41 @@ impl CustomDictionaryStore {
             .unwrap_or_default()
     }
 
+    /// The entries one of whose search keys EQUALS one of `query_keys` — the
+    /// toneless bodies of a TPS walk's edges
+    /// (`phonetics::api::tps_toneless_edge_key`), so a custom word anywhere in
+    /// the walked text meets its edge — at most `limit` per key, each entry
+    /// once, in one read: the store answers every key or none. Best-effort
+    /// like [`keystroke_rows`](Self::keystroke_rows).
+    pub fn rows_with_keys(
+        &self,
+        query_keys: &[CustomSearchKey],
+        limit: usize,
+    ) -> Vec<CustomDictionaryRow> {
+        self.database
+            .read(|connection| {
+                let mut statement = connection.prepare_cached(&format!(
+                    "SELECT DISTINCT entry.id, entry.roman, entry.hanzi, entry.created_at, entry.updated_at\nFROM {TABLE_NAME} AS entry\nJOIN {SEARCH_KEY_TABLE_NAME} AS search_key ON search_key.entry_id = entry.id\nWHERE search_key.family = ?1 AND search_key.form = ?2 AND search_key.key = ?3\nORDER BY entry.roman, entry.id\nLIMIT ?4;"
+                ))?;
+                let mut seen = HashSet::new();
+                let mut rows = Vec::new();
+                for query_key in query_keys {
+                    let matched = statement.query_map(
+                        params![query_key.family, query_key.form, query_key.key, limit as i64],
+                        decode_row,
+                    )?;
+                    for row in matched {
+                        let row = row?;
+                        if seen.insert(row.id.clone()) {
+                            rows.push(row);
+                        }
+                    }
+                }
+                Ok(rows)
+            })
+            .unwrap_or_default()
+    }
+
     // Settings path
 
     /// The entries matching `query_key` for the dictionary search page,
@@ -241,8 +282,8 @@ impl CustomDictionaryStore {
         })
     }
 
-    /// A page of entries for the settings list, newest edit first. The
-    /// filter and the limit are both SQL. `LIKE` is case-insensitive for
+    /// A page of entries for the settings list in `LISTED_ORDER`. The filter
+    /// and the limit are both SQL. `LIKE` is case-insensitive for
     /// ASCII, which is the romanization; Hanji have no case to fold.
     pub fn rows(
         &self,
@@ -254,14 +295,14 @@ impl CustomDictionaryStore {
         self.database.perform::<_, CustomDictionaryError>(move |connection| {
             if trimmed.is_empty() {
                 let mut statement = connection.prepare(&format!(
-                    "SELECT id, roman, hanzi, created_at, updated_at\nFROM {TABLE_NAME}\nORDER BY updated_at DESC\nLIMIT ? OFFSET ?;"
+                    "SELECT id, roman, hanzi, created_at, updated_at\nFROM {TABLE_NAME}\nORDER BY {LISTED_ORDER}\nLIMIT ? OFFSET ?;"
                 ))?;
                 let rows = statement.query_map(params![limit as i64, offset as i64], decode_row)?;
                 return Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?);
             }
             let (roman_pattern, hanji_pattern) = filter_patterns(&trimmed);
             let mut statement = connection.prepare(&format!(
-                "SELECT id, roman, hanzi, created_at, updated_at\nFROM {TABLE_NAME}\nWHERE roman LIKE ? ESCAPE '\\' OR hanzi LIKE ? ESCAPE '\\'\nORDER BY updated_at DESC\nLIMIT ? OFFSET ?;"
+                "SELECT id, roman, hanzi, created_at, updated_at\nFROM {TABLE_NAME}\nWHERE roman LIKE ? ESCAPE '\\' OR hanzi LIKE ? ESCAPE '\\'\nORDER BY {LISTED_ORDER}\nLIMIT ? OFFSET ?;"
             ))?;
             let rows = statement.query_map(params![roman_pattern, hanji_pattern, limit as i64, offset as i64], decode_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -311,7 +352,7 @@ impl CustomDictionaryStore {
     /// Adds `row`, or replaces the one that already carries its id. The
     /// search keys are derived first, outside the transaction.
     pub fn upsert(&self, row: &CustomDictionaryRow) -> Result<(), CustomDictionaryError> {
-        let row = with_stored_roman(row);
+        let row = stored_row(row);
         let search_keys = self.derived_keys(&row.roman)?;
         let limit = self.entry_limit;
         self.database
@@ -334,7 +375,7 @@ impl CustomDictionaryStore {
         &self,
         row: &CustomDictionaryRow,
     ) -> Result<(), CustomDictionaryError> {
-        let row = with_stored_roman(row);
+        let row = stored_row(row);
         let search_keys = self.derived_keys(&row.roman)?;
         let limit = self.entry_limit;
         self.database
@@ -440,9 +481,9 @@ impl CustomDictionaryStore {
     }
 
     /// What every launch runs once the file is open: the takeover's key
-    /// re-derivation, then the repair of stored romans to their stored form. Blocks (it goes
-    /// through `perform`), so never on a UI thread or a store worker. A failure is logged and the store stays
-    /// usable.
+    /// re-derivation, then the repair of stored rows to their stored form.
+    /// Blocks (it goes through `perform`), so never on a UI thread or a store
+    /// worker. A failure is logged and the store stays usable.
     pub fn finish_takeover(&self) {
         // The re-derivation is part of the takeover: another process taking
         // over the same file is waited out as long as the open waits.
@@ -450,40 +491,46 @@ impl CustomDictionaryStore {
         if let Err(error) = self.rederive_search_keys_if_needed() {
             log::error!("custom_dictionary.rederive_failed error={error}");
         }
-        if let Err(error) = self.normalize_stored_romans_if_needed() {
+        if let Err(error) = self.normalize_stored_rows_if_needed() {
             log::error!("custom_dictionary.normalize_failed error={error}");
         }
         self.database.wait_long_for_locks(false);
     }
 
-    /// Rewrites every stored roman that is not in the stored form
-    /// (`stored_roman`) into it — the rows written before the write boundary
+    /// Rewrites every stored row that is not in the stored form
+    /// (`stored_row`) into it — the rows written before the write boundary
     /// normalised: a decomposed CSV import (NFD), a roman saved with tone
-    /// digits (`tsui2-ong5-tshut`). No marker: the stamps cannot carry one
-    /// (Android files keep 10 and iOS files 6 whatever this build writes,
-    /// and `application_id` is the takeover), so the scan is the gate — a
-    /// file an older build writes into again heals on the next launch, and a
-    /// file with nothing to fix costs one read that keeps no rows. The search
-    /// keys are derived again from the rewritten roman and replaced with it.
-    /// Ids, timestamps and Hanji are kept; two rows that become identical
-    /// both stay (a repair never deletes a word). Each rewrite is conditional
-    /// on the roman still being the one read, so an edit made in between —
-    /// or another process that already normalised — wins.
-    pub fn normalize_stored_romans_if_needed(&self) -> Result<(), CustomDictionaryError> {
-        let stale: Vec<(String, String, String)> = self
+    /// digits (`tsui2-ong5-tshut`), a roman-only word saved with its
+    /// romanization in the Hanji column (`lán,lán`). No marker: the stamps cannot
+    /// carry one (Android files keep 10 and iOS files 6 whatever this build
+    /// writes, and `application_id` is the takeover), so the scan is the
+    /// gate — a file an older build writes into again heals on the next
+    /// launch, and a file with nothing to fix costs one read that keeps no
+    /// rows. The search keys are derived again from the rewritten roman and
+    /// replaced with it. Ids and timestamps are kept; two rows that become
+    /// identical both stay (a repair never deletes a word). Each rewrite is
+    /// conditional on the row still being the one read, so an edit made in
+    /// between — or another process that already normalised — wins.
+    pub fn normalize_stored_rows_if_needed(&self) -> Result<(), CustomDictionaryError> {
+        type Columns = (String, String);
+        let stale: Vec<(String, Columns, Columns)> = self
             .database
             .perform::<_, CustomDictionaryError>(|connection| {
                 let mut statement =
-                    connection.prepare(&format!("SELECT id, roman FROM {TABLE_NAME};"))?;
+                    connection.prepare(&format!("SELECT id, roman, hanzi FROM {TABLE_NAME};"))?;
                 let rows = statement.query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })?;
                 let mut stale = Vec::new();
                 for row in rows {
-                    let (id, roman) = row?;
-                    let normalized = stored_roman(&roman);
-                    if normalized != roman {
-                        stale.push((id, roman, normalized));
+                    let (id, roman, hanji) = row?;
+                    let normalized = (stored_roman(&roman), stored_hanji(&hanji).to_owned());
+                    if normalized != (roman.clone(), hanji.clone()) {
+                        stale.push((id, (roman, hanji), normalized));
                     }
                 }
                 Ok(stale)
@@ -492,9 +539,9 @@ impl CustomDictionaryStore {
             return Ok(());
         }
         let mut rewrites = Vec::with_capacity(stale.len());
-        for (id, roman, normalized) in stale {
-            let search_keys = self.derived_keys(&normalized)?;
-            rewrites.push((id, roman, normalized, search_keys));
+        for (id, read, normalized) in stale {
+            let search_keys = self.derived_keys(&normalized.0)?;
+            rewrites.push((id, read, normalized, search_keys));
         }
         // One transaction per chunk, as an import: the write lock is never
         // held for the whole repair (a rollback-journal file blocks the
@@ -508,12 +555,12 @@ impl CustomDictionaryStore {
                 .perform::<_, CustomDictionaryError>(move |connection| {
                     immediate_transaction(connection, |connection| {
                         let mut rewritten = 0;
-                        for (id, roman, normalized, search_keys) in &chunk {
+                        for (id, (roman, hanji), (new_roman, new_hanji), search_keys) in &chunk {
                             let updated = connection.execute(
                                 &format!(
-                                    "UPDATE {TABLE_NAME} SET roman = ? WHERE id = ? AND roman = ?;"
+                                    "UPDATE {TABLE_NAME} SET roman = ?, hanzi = ? WHERE id = ? AND roman = ? AND hanzi = ?;"
                                 ),
-                                params![normalized, id, roman],
+                                params![new_roman, new_hanji, id, roman, hanji],
                             )?;
                             if updated > 0 {
                                 replace_search_keys(connection, id, search_keys)?;
@@ -524,7 +571,7 @@ impl CustomDictionaryStore {
                     })
                 })?;
         }
-        log::info!("custom_dictionary.normalized_romans count={rewritten}");
+        log::info!("custom_dictionary.normalized_rows count={rewritten}");
         Ok(())
     }
 
@@ -561,7 +608,7 @@ impl CustomDictionaryStore {
         let mut seen_in_file = HashSet::new();
         let candidates: Vec<CustomDictionaryRow> = rows
             .iter()
-            .map(with_stored_roman)
+            .map(stored_row)
             .filter(|row| seen_in_file.insert(row.identity()))
             .collect();
         let mut derived_by_roman: HashMap<&str, Vec<CustomSearchKey>> = HashMap::new();
@@ -623,12 +670,27 @@ fn stored_roman(roman: &str) -> String {
     phonetics::api::tone_digits_to_marks(roman)
 }
 
-/// `row` with its roman in the stored form. Only the roman: NFC would fold a
-/// CJK compatibility ideograph in the Hanji onto its unified twin, changing
+/// The one stored form of a Hanji column: empty when its spelling is written
+/// only in romanization (`lán`) — that word has no Hanji, the shape every shipped
+/// dictionary row takes (`dictionary/common/cleanup.py`
+/// `blank_roman_only_hanzi`) — otherwise as typed. Never normalised: NFC
+/// would fold a CJK compatibility ideograph onto its unified twin, changing
 /// the character the user chose.
-fn with_stored_roman(row: &CustomDictionaryRow) -> CustomDictionaryRow {
+fn stored_hanji(hanji: &str) -> &str {
+    if phonetics::api::is_roman_only_spelling(hanji) {
+        ""
+    } else {
+        hanji
+    }
+}
+
+/// `row` in the stored form — its roman by [`stored_roman`], its Hanji by
+/// [`stored_hanji`]. The one write boundary: an add, an edit, an import and
+/// a restore all store through it.
+fn stored_row(row: &CustomDictionaryRow) -> CustomDictionaryRow {
     CustomDictionaryRow {
         roman: stored_roman(&row.roman),
+        hanji: stored_hanji(&row.hanji).to_owned(),
         ..row.clone()
     }
 }

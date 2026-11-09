@@ -12,6 +12,8 @@
     <string name="i18n_common_close">關閉</string>
     <string name="i18n_common_other">其他</string>
     <string name="i18n_common_edit">編輯</string>
+    <string name="i18n_common_duplicate">複製</string>
+    <string name="i18n_common_duplicateName">%1$s 副本</string>
     <string name="i18n_common_toggleTranslateSwapped">切換漢字/羅馬字</string>
     <string name="i18n_common_back">倒轉去</string>
     <string name="i18n_common_viewWebsite">官方網站</string>
@@ -32,7 +34,9 @@
     <string name="i18n_common_fontGenYoMin">源樣明體</string>
     <string name="i18n_common_fontGenYoGothic">源樣烏體</string>
     <string name="i18n_desktop_telexGuideHyphen">連字符</string>
+    <string name="i18n_desktop_menuUndo">還原</string>
     <string name="i18n_desktop_dictionarySourcesLink">辭典管理</string>
+    <string name="i18n_desktop_customDictReadFailed">自訂詞庫讀失敗</string>
     <string name="i18n_dictionary_customDictionary">自訂詞庫</string>
     <string name="i18n_dictionary_customDictEnabled">啟用自訂詞庫</string>
     <string name="i18n_dictionary_customDictEnabledInfo">拍開了後，自訂詞會出現佇候選詞內底。</string>
@@ -141,6 +145,7 @@
     <string name="i18n_home_websiteLink">taigikeyboard.tw</string>
     <string name="i18n_home_githubLink">GitHub</string>
     <string name="i18n_home_discordLink">Discord</string>
+    <string name="i18n_home_discordCommunity">問題討論</string>
     <string name="i18n_home_facebookLink">Facebook</string>
     <string name="i18n_home_instagramLink">Instagram</string>
     <string name="i18n_home_threadsLink">Threads</string>
@@ -178,6 +183,8 @@
     <string name="i18n_layout_createNewLayout">新佈局…</string>
     <string name="i18n_layout_editorTitleNew">新佈局</string>
     <string name="i18n_layout_nameHeader">佈局名稱</string>
+    <string name="i18n_layout_calloutsTitle">長揤字</string>
+    <string name="i18n_layout_trayTones">聲調</string>
     <string name="i18n_layout_commonLayoutsSection">通用</string>
     <string name="i18n_layout_standardLayout">Lohankha</string>
     <string name="i18n_layout_phahTaigiLayout">PhahTaigi</string>
@@ -286,9 +293,9 @@
     <string name="i18n_theme_namePlaceholder">輸入主題名稱</string>
     <string name="i18n_theme_editorResetAll">恢復預設設定</string>
     <string name="i18n_theme_cardMenuApply">套用</string>
+    <string name="i18n_theme_cardMenuCustomize">自訂</string>
     <string name="i18n_theme_capReachedTitle">已達主題數量上限</string>
     <string name="i18n_theme_capReachedMessage">自訂主題上限是 5 个，請先刪除一个才會使閣新增。</string>
-    <string name="i18n_theme_cardMenu">主題選項</string>
     <string name="i18n_theme_colorPickerGrid">格仔</string>
     <string name="i18n_theme_colorPickerSpectrum">光譜</string>
     <string name="i18n_theme_colorPickerSliders">滑桿</string>

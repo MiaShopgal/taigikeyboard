@@ -260,6 +260,13 @@ impl SettingsDocument {
         self.is_typing_tps() && self.bool(&keys::TPS_KEYBOARD_SHOWN)
     }
 
+    /// Whether the Telex guide should be up: the user asked for it and TPS,
+    /// which types no Telex keys, is not being typed (#684). macOS twin:
+    /// `SettingsStore.isTelexGuideWanted`.
+    pub fn is_telex_guide_wanted(&self) -> bool {
+        !self.is_typing_tps() && self.bool(&keys::TELEX_GUIDE_SHOWN)
+    }
+
     /// Puts every setting the General pane owns back to shipped state.
     pub fn reset_general(&mut self) {
         for name in keys::GENERAL_KEYS {
@@ -357,6 +364,8 @@ impl SettingsDocument {
             is_nasal_marker_uppercase_enabled: self.bool(&keys::IS_NASAL_MARKER_UPPERCASE_ENABLED),
             is_custom_dict_enabled: self.bool(&keys::IS_CUSTOM_DICT_ENABLED),
             dictionary_sources: self.dictionary_sources(),
+            is_hanji_conversion_enabled: input_mode == InputMode::Tps
+                && self.bool(&keys::IS_CANDIDATE_WINDOW_ENABLED),
         }
     }
 
@@ -612,6 +621,26 @@ mod tests {
     }
 
     #[test]
+    fn the_telex_guide_is_wanted_outside_tps_with_its_key_on_and_reset_clears_it() {
+        // trace: is_telex_guide_wanted = mode != Tps && telexGuideShown; the
+        // key survives a switch to TPS and back; GENERAL_KEYS removes it.
+        let mut doc = SettingsDocument::default();
+        assert!(!doc.is_telex_guide_wanted(), "off until asked for");
+        doc.set_bool(&keys::TELEX_GUIDE_SHOWN, true);
+        assert!(doc.is_telex_guide_wanted());
+        doc.switch_input_mode(InputModeRequest::ToggleRomanization);
+        assert!(doc.is_telex_guide_wanted(), "POJ: still a Telex table");
+        doc.switch_input_mode(InputModeRequest::ToggleTps);
+        assert!(!doc.is_telex_guide_wanted(), "TPS types no Telex keys");
+        assert!(doc.bool(&keys::TELEX_GUIDE_SHOWN), "kept for the way back");
+        doc.switch_input_mode(InputModeRequest::ToggleTps);
+        assert!(doc.is_telex_guide_wanted());
+        doc.reset_general();
+        assert!(!doc.contains(keys::TELEX_GUIDE_SHOWN.name));
+        assert!(!doc.is_telex_guide_wanted());
+    }
+
+    #[test]
     fn roman_only_masks_the_swap_without_touching_what_is_stored() {
         // trace: stored swap=true; mode=romanOnly → the snapshot reads false
         // while `bool(&key)` still answers true; back to sideBySide → true
@@ -859,6 +888,7 @@ mod tests {
                 },
                 ..DictionarySourceToggles::DEFAULT
             },
+            is_hanji_conversion_enabled: false,
         };
         assert_eq!(doc.engine_settings(), expected);
     }
@@ -876,6 +906,18 @@ mod tests {
         doc.set_choice(&keys::INPUT_MODE, InputMode::Tps);
         assert_eq!(doc.choice(&keys::INPUT_MODE), InputMode::Tps);
         assert!(doc.engine_settings().is_full_width_punctuation);
+    }
+
+    #[test]
+    fn only_tps_with_the_candidate_window_on_converts_to_hanji() {
+        // trace: `engine_settings` — `input_mode == Tps &&
+        // IS_CANDIDATE_WINDOW_ENABLED` (default on).
+        let mut doc = SettingsDocument::default();
+        assert!(!doc.engine_settings().is_hanji_conversion_enabled);
+        doc.set_choice(&keys::INPUT_MODE, InputMode::Tps);
+        assert!(doc.engine_settings().is_hanji_conversion_enabled);
+        doc.set_bool(&keys::IS_CANDIDATE_WINDOW_ENABLED, false);
+        assert!(!doc.engine_settings().is_hanji_conversion_enabled);
     }
 
     #[test]

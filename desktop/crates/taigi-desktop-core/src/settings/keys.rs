@@ -25,6 +25,7 @@ use super::engine_settings::{
     CandidateDisplayMode, DictionarySourceToggles, EngineSettings, InputMode, Romanization,
     SyllableSeparator,
 };
+use crate::engine::user_data::{LearningRecordKind, LearningRecordOrder};
 use crate::strings::DisplayLanguage;
 
 const ENGINE_DEFAULTS: EngineSettings = EngineSettings::DEFAULT;
@@ -43,6 +44,11 @@ pub const LAST_ROMANIZATION_MODE: SettingsKey<Romanization> =
 /// macOS keeps a Swift twin (`SettingsStore.swift`); the Linux panel is a
 /// window of the settings app and keeps no key.
 pub const TPS_KEYBOARD_SHOWN: SettingsKey<bool> = SettingsKey::new("tpsKeyboardShown", false);
+/// Whether the Telex guide is up while a romanization is typed (#684):
+/// flipped by the guide's shortcut, kept across mode switches so the guide
+/// comes back when TPS is left. macOS keeps a Swift twin
+/// (`SettingsStore.swift`).
+pub const TELEX_GUIDE_SHOWN: SettingsKey<bool> = SettingsKey::new("telexGuideShown", false);
 pub const IS_HANJI_FIRST: SettingsKey<bool> =
     SettingsKey::new("isTranslateSwapped", ENGINE_DEFAULTS.is_hanji_first);
 // RETIRED 2026-09-30: `outputBothScripts` (Annotate in Brackets). No desktop
@@ -182,6 +188,15 @@ pub const RECENT_SYMBOLS: SettingsKey<&'static [&'static str]> =
 pub const SELECTED_SETTINGS_PANE: SettingsKey<SettingsPane> =
     SettingsKey::new("selectedSettingsPane", SettingsPane::General);
 
+/// The Learning Records page's kind and order pickers, kept like the pane
+/// above so the page reopens on the last pick (#773). Not reset by any
+/// pane's reset. macOS keeps Swift twins: `SettingsStore.swift`
+/// `learningRecordsKind` / `learningRecordsOrder`.
+pub const LEARNING_RECORDS_KIND: SettingsKey<LearningRecordKind> =
+    SettingsKey::new("learningRecordsKind", LearningRecordKind::DEFAULT);
+pub const LEARNING_RECORDS_ORDER: SettingsKey<LearningRecordOrder> =
+    SettingsKey::new("learningRecordsOrder", LearningRecordOrder::DEFAULT);
+
 /// Presentation choices the candidate window and settings window read.
 /// Spellings are iOS's where a matching iOS setting exists (`fontType`), the
 /// desktop's own otherwise — the same as the macOS Swift twin's
@@ -276,12 +291,14 @@ pub const CLEARED_COMPOSING_CHORD: &str = "";
 /// (USER 2026-09-20: the reset must not switch the UI language under the
 /// user), not the update bookkeeping, not the remembered pane. macOS keeps a
 /// Swift twin: `SettingsStore.swift` `resetGeneralSettings`. The input mode
-/// takes the romanization TPS returns to and the TPS key panel with it.
-pub const GENERAL_KEYS: [&str; 11] = [
+/// takes the romanization TPS returns to and the TPS key panel with it; the
+/// Telex guide's wish resets beside them.
+pub const GENERAL_KEYS: [&str; 12] = [
     INPUT_MODE.name,
     KEYBOARD_LAYOUT.name,
     LAST_ROMANIZATION_MODE.name,
     TPS_KEYBOARD_SHOWN.name,
+    TELEX_GUIDE_SHOWN.name,
     TONE_INPUT_SCHEME.name,
     IS_HANJI_FIRST.name,
     IS_AUTO_SPACE_ENABLED.name,
@@ -346,6 +363,9 @@ mod tests {
             CANDIDATE_DISPLAY_MODE.default,
             CandidateDisplayMode::SideBySide
         );
+        // The macOS twin's spellings (`SettingsStore.swift` `Keys`).
+        assert_eq!(LEARNING_RECORDS_KIND.name, "learningRecordsKind");
+        assert_eq!(LEARNING_RECORDS_ORDER.name, "learningRecordsOrder");
     }
 
     #[test]

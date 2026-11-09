@@ -13,6 +13,7 @@ Inputs (listed in INPUT_FILES merge order):
 - sources/official/kungge/data/kungge.csv
 - sources/official/stti/data/stti.csv
 - sources/supplementary/khpoo/data/khpoo.csv
+- supplementary/dev/data/{dev,khinsiann}.csv, supplementary/lkk/data/lkk.csv
 - Khiin frequency data (entries missing from the other dictionaries)
 
 Output:
@@ -28,6 +29,7 @@ import pandas as pd
 
 from build.common import BASE_DIR, LOG_DIR
 from common.abbrev import extract_abbrev, extract_tps_abbrev
+from common.cleanup import blank_roman_only_hanzi
 from common.frequency import load_frequency_map, get_frequency
 from common.logging_utils import setup_logging, log_header
 from common.notone import apply_or_dialect_variant, remove_tone, remove_tps_tone
@@ -54,6 +56,9 @@ INPUT_FILES = [
     ("sources/official/stti/data/stti.csv", "stti"),
     ("sources/supplementary/khpoo/data/khpoo.csv", "khpoo"),
 ]
+# supplementary/dev/data/ files, read in order: hand-picked coverage gaps, then
+# the khinsiann pieces (`--ah`, 起來 `--khí-lâi`) imported from the Han-Lo lexicon.
+DEV_SUPPLEMENT_FILES = ("dev.csv", "khinsiann.csv")
 OUTPUT_DIR_NAME = "output"
 OUTPUT_FILE = "dictionary.csv"
 SCRIPT_NAME = "merge_csv"
@@ -256,7 +261,8 @@ def _build_existing_key_index(existing_df: pd.DataFrame) -> dict[tuple[str, str]
     index: dict[tuple[str, str], int] = {}
     for idx, row in existing_df.iterrows():
         tl_key = str(row["tl"]).lower().replace(" ", "-")
-        index[(str(row["hanzi"]), tl_key)] = idx
+        hanzi = "" if pd.isna(row["hanzi"]) else str(row["hanzi"])
+        index[(hanzi, tl_key)] = idx
     return index
 
 
@@ -444,20 +450,24 @@ def _load_dev_supplement(
     """
     Load developer supplement dictionary entries.
 
-    Reads a minimal CSV (hanzi, tl) and auto-generates all romanization columns.
-    No cleanup is applied — trusts user input.
+    Reads the minimal CSVs (hanzi, tl) in DEV_SUPPLEMENT_FILES and auto-generates
+    all romanization columns. No cleanup is applied — trusts user input — except
+    that a fully romanized spelling is stored without hanzi, as LKK does.
     If a (hanzi, tl) pair already exists, marks it dev=True (always included).
     New pairs are added with dev=True and all source columns set to False.
     """
-    dev_path = base_dir / "supplementary" / "dev" / "data" / "dev.csv"
+    data_dir = base_dir / "supplementary" / "dev" / "data"
+    frames = []
+    for name in DEV_SUPPLEMENT_FILES:
+        path = data_dir / name
+        if not path.exists():
+            logger.warning(f"  [skip] dev supplement {name} not found")
+            continue
+        frames.append(read_dictionary_csv(path))
 
-    if not dev_path.exists():
-        logger.warning("  [skip] dev supplement CSV not found")
-        return None
-
-    dev_df = read_dictionary_csv(dev_path)
+    dev_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if dev_df.empty:
-        logger.info("  [dev] dev.csv is empty, skipping")
+        logger.info("  [dev] dev supplement is empty, skipping")
         return None
 
     existing_key_index = _build_existing_key_index(existing_df)
@@ -472,11 +482,16 @@ def _load_dev_supplement(
         if not hanzi or not tl_raw:
             continue
 
+        hanzi = blank_roman_only_hanzi(hanzi)
         tl_key = tl_raw.replace(" ", "-")
         if (hanzi, tl_key) in existing_key_index:
-            existing_df.at[existing_key_index[(hanzi, tl_key)], "dev"] = True
-            logger.info(f"  [dev] marked existing: {hanzi} / {tl_raw}")
-            marked_count += 1
+            idx = existing_key_index[(hanzi, tl_key)]
+            if idx >= 0:
+                existing_df.at[idx, "dev"] = True
+                logger.info(f"  [dev] marked existing: {hanzi} / {tl_raw}")
+                marked_count += 1
+            else:
+                logger.info(f"  [dev] skip duplicate: {hanzi} / {tl_raw}")
             continue
 
         try:
@@ -526,6 +541,7 @@ def _load_lkk_entries(
     Load LKK Han-Lo Recommended Characters dictionary entries.
 
     Reads a minimal CSV (hanzi, tl) and auto-generates all romanization columns.
+    A fully romanized spelling is a word with no hanzi, the shape the sources store.
     If a (hanzi, tl) pair already exists, marks it lkk=True.
     New pairs are added with lkk=True and all other source columns set to False.
     """
@@ -552,6 +568,7 @@ def _load_lkk_entries(
         if not hanzi or not tl_raw:
             continue
 
+        hanzi = blank_roman_only_hanzi(hanzi)
         tl_key = tl_raw.replace(" ", "-")
         if (hanzi, tl_key) in existing_key_index:
             idx = existing_key_index[(hanzi, tl_key)]

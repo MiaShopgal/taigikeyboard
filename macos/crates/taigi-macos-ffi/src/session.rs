@@ -911,7 +911,7 @@ mod tests {
         assert_eq!(list.anchor_end_utf16, 1);
     }
 
-    /// trace: Telex keys `vydwxqzf`; `y` after `tai` is the engine's tone 3
+    /// trace: Telex keys `vydwxqzfch`; `y` after `tai` is the engine's tone 3
     /// → "tài".
     #[test]
     fn a_telex_key_reaches_the_engine_as_a_tone() {
@@ -1479,8 +1479,8 @@ mod tests {
         assert_eq!(first.cells[0].text, "家");
         assert_eq!(first.anchor_end_utf16, 1);
         // Pick 家 (the caret goes to the end), ← to the start of the tail:
-        // the list is 罷's, the word after the caret, and the window stays at
-        // the caret — under the nailed 家 (roadmap H8, as built in H-P5).
+        // the list is the word before the caret, the nailed 家, under 家
+        // (roadmap H8; v3.9.0 row 10d replaced H-P5's list of the word after).
         let one = KeyEvent {
             key_code: Some(0x12),
             ..typed("1")
@@ -1491,7 +1491,7 @@ mod tests {
         );
         typist.key(left, no_list());
         let tail_start = shown_list(&typist.key(down, no_list()));
-        assert_eq!(tail_start.cells[0].text, "罷");
+        assert_eq!(tail_start.cells[0].text, "家");
         assert_eq!(tail_start.anchor_end_utf16, 1);
     }
 
@@ -1993,6 +1993,44 @@ mod tests {
                     .iter()
                     .any(|effect| matches!(effect, effect::Effect::CandidatesChanged(_)));
                 assert!(window || !shows_a_list, "{reply:?}");
+            }
+        });
+    }
+
+    /// rust-ffi-safety.md §6 T3: the Manage Dictionaries search, sent from
+    /// the settings pane's background task, runs beside the key path — no
+    /// Shell lock of its own, the engine's per-request locks ordering the
+    /// two — and both answer.
+    #[test]
+    fn a_dictionary_search_runs_beside_the_key_path() {
+        use crate::proto::DictionarySearchRequest;
+        let (_engine, shell) = engine_shell();
+        let typist = Typist::activated(shell, vec![]);
+        let snapshot = SettingsSnapshot {
+            entries: vec![text("inputMode", "tl")],
+        };
+        std::thread::scope(|scope| {
+            let searches: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        shell.serve(
+                            Request::DictionarySearch(DictionarySearchRequest {
+                                query: "tsiah".to_owned(),
+                            }),
+                            Some(&snapshot),
+                        )
+                    })
+                })
+                .collect();
+            for character in ["t", "s", "i", "a", "h"] {
+                assert!(typist.key(typed(character), no_list()).handled);
+            }
+            for search in searches {
+                let reply = search.join().expect("no panic escapes");
+                assert!(
+                    matches!(&reply, Ok(Reply::DictionarySearch(found)) if !found.hits.is_empty()),
+                    "{reply:?}"
+                );
             }
         });
     }

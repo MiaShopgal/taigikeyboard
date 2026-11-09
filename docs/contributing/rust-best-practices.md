@@ -1,6 +1,6 @@
 # Rust Best Practices
 
-Mandatory rules for Rust shared-core development. Read before any Rust code lands in the engine. FFI / proto-boundary / `unsafe` / opaque-handle / enforcement rules are split into `docs/contributing/rust-ffi-safety.md`.
+Rules for Rust shared-core development. Read before any Rust code lands in the engine. FFI / proto-boundary / `unsafe` / opaque-handle / enforcement rules are split into `docs/contributing/rust-ffi-safety.md`.
 
 **Three goals** every rule below serves at least one of:
 
@@ -36,7 +36,7 @@ Runtime crates sit in four layers, and dependency edges flow **one way, top → 
 - **`anyhow` is forbidden in every workspace library crate**. Allowed in build scripts only.
 - **`Result<T, <CrateError>>` throughout internal APIs.** `dispatch` maps each crate error to the wire `ErrorCode` (`envelope.proto` `Response.error`) — e.g. `lexicon_error_code` in `dispatch/src/lib.rs` — and the FFI seams build error-only responses with `dispatch::encode_error` (see `docs/contributing/rust-ffi-safety.md` § FFI boundary discipline).
 - **No `panic!` / `unwrap()` / `expect()` on unvalidated input.** `unwrap()` on a `Mutex::lock()` result is acceptable (poison is a programmer error, not a data path); briefly explain with `// JUSTIFICATION:` when non-obvious. `SAFETY:` comments are reserved for `unsafe` blocks per `docs/contributing/rust-ffi-safety.md` §3 — a safe `Mutex::lock().unwrap()` does not take one.
-- **`?` is allowed and idiomatic inside `dispatch`'s handlers**, which turn every `Err` into an error `Response`. What is banned is propagating a `Result` out of the FFI function itself — the outer `extern fn` must return protobuf bytes or a null sentinel, never a Rust `Result` or `Option`. The seam's `catch_unwind` maps a panic to `encode_error(…, ErrorCode::FailInternal, …)` (`swift-ffi/src/lib.rs::process_request_bytes`).
+- **`?` is allowed and idiomatic inside `dispatch`'s handlers**, which turn every `Err` into an error `Response`. What is banned is propagating a `Result` out of the FFI function itself — the outer `extern fn` must return protobuf bytes or a null sentinel, never a Rust `Result` or `Option`. The seam's `catch_unwind` maps a panic to `encode_error(ErrorCode::FailInternal)` (`swift-ffi/src/lib.rs::process_request_bytes`).
 
 ## 3. Crate + type choices `[R]` `[A]`
 
@@ -78,15 +78,15 @@ Type-shape preferences that cross FFI:
 ## 6. Rust version policy `[A]`
 
 - **Stable channel only.** No nightly features, no `#![feature(...)]`.
-- **MSRV per workspace** — engine 1.86, desktop + linux + macos 1.93, windows 1.95 (`rust-version` in each workspace `Cargo.toml`; why and which CI job checks each: `docs/architecture/build-artifacts.md` § Five Cargo workspaces). Bumping is a PR-level decision with CI verification.
+- **MSRV per workspace** — engine 1.89, desktop + linux + macos + web 1.93, windows 1.95 (`rust-version` in each workspace `Cargo.toml`; why and which CI job checks each: `docs/architecture/build-artifacts.md` § Six Cargo workspaces). Bumping is a PR-level decision with CI verification.
 - **`rustfmt` default config**, no deviations. Apply with `make fmt`; check without writing via `cd engine && cargo fmt --all -- --check` (CI gates it per §7).
-- **`clippy` with `-D warnings`** — CI gates it (`engine.yml` engine workspace, `desktop.yml` desktop workspace); run locally with `make lint` (rustfmt check on all five workspaces, clippy on engine / desktop / macOS, SwiftFormat lint, Kotlin spotlessCheck). Project-wide allow list lives in workspace `Cargo.toml` `[workspace.lints]`.
+- **`clippy` with `-D warnings`** — CI gates it (`engine.yml` engine workspace, `desktop.yml` desktop workspace); run locally with `make lint` (rustfmt check on all six workspaces, clippy on engine / desktop / macOS / web, biome, SwiftFormat lint, Kotlin spotlessCheck). Project-wide allow list lives in workspace `Cargo.toml` `[workspace.lints]`.
 
 ## 7. CI gate + supply chain `[A]`
 
-CI (`.github/workflows/engine.yml`) runs `cargo test --workspace`, `cargo fmt --check` and `cargo clippy -D warnings` on every PR touching `engine/`; `.github/workflows/desktop.yml` runs the desktop-shared workspace's tests + clippy and the desktop + Windows fmt check on PRs touching `desktop/`, `windows/` or `engine/`; `.github/workflows/macos.yml` runs the `macos/` workspace's tests, clippy and fmt check plus the archive build and `make -C macos test` on PRs touching `macos/`, `desktop/` or `engine/`; `.github/workflows/linux-build.yml` (nightly, on release and on manual dispatch — not per PR) runs the `linux/` workspace's clippy, tests, fmt check and release build; `.github/workflows/security.yml` runs `cargo-audit` over all five Cargo workspaces + `cargo-deny` over the engine and macOS (`engine/deny.toml`) on PRs touching Cargo manifests / lockfiles and weekly. Post-PR verification follows AGENTS.md § Build & Test.
+CI per workspace (`.github/workflows/`): `engine.yml` — `cargo test --workspace`, `cargo fmt --check`, `cargo clippy -D warnings`; `desktop.yml` — desktop-shared tests + clippy, desktop + Windows fmt; `macos.yml` — `macos/` tests, clippy, fmt, archive build, `make -C macos test`; `linux-build.yml` — nightly, on release and on dispatch, never per PR: `linux/` clippy, tests, fmt, release build; `web.yml` — `make web-check`; `security.yml` — `cargo-audit` over all six workspaces + `cargo-deny` over engine and macOS (`engine/deny.toml`), also weekly; `security-windows.yml` — `cargo-deny` over Windows (`windows/deny.toml`), also weekly. Each workflow's `on.pull_request.paths` is the only record of what triggers it. Post-PR verification follows AGENTS.md § Build & Test.
 
-- `make`-target shortcuts available for round-internal iteration (fast paths) AND canonical form (full paths). See root `Makefile help` for the current target list.
+- `make help` lists the root targets.
 - **`cargo-audit`** scans against the RustSec advisory DB (CI `security.yml`; locally, install via `cargo install cargo-audit --locked`).
 - **`cargo-deny check`** enforces dependency policy via `engine/deny.toml`: license allow-list (MIT / Apache-2.0 / BSD / ISC / Unicode-DFS-2016 / Unicode-3.0 / Zlib), `multiple-versions = warn`, `unknown-git = deny`, `unknown-registry = deny`. Runs in CI `security.yml`; locally, install via `cargo install cargo-deny --locked`.
 - **FFI integration tests** are run on representative Android emulator + iOS simulator targets when relevant to the round — user-gated, no CI matrix, no fixed schedule.
@@ -96,9 +96,8 @@ CI (`.github/workflows/engine.yml`) runs `cargo test --workspace`, `cargo fmt --
 
 What the engine never owns on the platform side: `docs/contributing/cross-platform-alignment.md` §4.1. Rust-side non-goals (no async runtime: §3):
 
-- **No stray global state.** Process-wide engine state lives only in each stateful domain crate's `handle.rs` singleton behind a `Mutex` / `RwLock`. Immutable lookup tables may use `once_cell::sync::Lazy`. No other mutable globals.
-- **No Rust-side UI in `engine/`.** No GTK / Tauri / egui. The `engine/` workspace ships engine + phonetics + CLI only. The Windows (`windows/`: TSF DLL + WinUI 3 settings) and Linux (`linux/`: IBus engine + GTK settings in Rust, Fcitx5 addon in C++ over `taigi-linux-ffi`) frontends live in separate Cargo workspaces governed by `windows-guidelines.md` / `linux-guidelines.md`; the `macos/` workspace builds the one archive the macOS app links (`taigi-macos-ffi`: engine seam + `taigi-desktop-core`, governed by `rust-ffi-safety.md`). iOS / Android UI and the macOS UI stay in Swift / Kotlin.
-- **No web-target builds** (`wasm32-*`). Future consideration, not a current deliverable.
+- **No stray global state.** Process-wide engine state lives only in each stateful domain crate's `handle.rs` singleton behind a `Mutex` / `RwLock`. Immutable lookup tables may use `once_cell::sync::Lazy`. One install-time exception: the `wasm32` byte registry in `engine/mmap-host/src/registry.rs`, written before the lexicon installs, where native targets have the file system. No other mutable globals.
+- **No Rust-side UI in `engine/`.** No GTK / Tauri / egui. The `engine/` workspace ships engine + phonetics + CLI only. The Windows (`windows/`: TSF DLL + WinUI 3 settings) and Linux (`linux/`: IBus engine + GTK settings in Rust, Fcitx5 addon in C++ over `taigi-linux-ffi`) frontends live in separate Cargo workspaces governed by `windows-guidelines.md` / `linux-guidelines.md`; the `macos/` workspace builds the one archive the macOS app links (`taigi-macos-ffi`: engine seam + `taigi-desktop-core`, governed by `rust-ffi-safety.md`); the `web/` workspace builds the browser module (`taigi-web`, governed by `web-guidelines.md`). iOS / Android UI and the macOS UI stay in Swift / Kotlin.
 - **No FFI-crossing types from `std::sync` beyond `Arc<Mutex<...>>`.** Channels, condvars, parking_lot stay Rust-internal.
 - **No `Send`-ing `Rc<...>` / `RefCell<...>`.** Interior mutability across FFI is rejected — use `Mutex` if shared, plain ownership if not.
 

@@ -6,6 +6,24 @@ import XCTest
 /// What the engine itself does with a request is `engine/userdata`'s subject.
 @MainActor
 final class LearningRecordsPageTests: XCTestCase {
+    /// Each case's own defaults domain, so a kind or order one case picks is
+    /// never where the next case's page opens. Force-unwrapped rather than
+    /// seeded with `UserDefaults.standard`: a failed `setUp` should stop the
+    /// test, not quietly write the real domain.
+    private var suiteName = ""
+    private var settings: SettingsStore!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        suiteName = "LearningRecordsPageTests.\(UUID().uuidString)"
+        settings = try SettingsStore(userDefaults: XCTUnwrap(UserDefaults(suiteName: suiteName)))
+    }
+
+    override func tearDown() async throws {
+        settings.userDefaults.removePersistentDomain(forName: suiteName)
+        try await super.tearDown()
+    }
+
     private func record(
         _ kind: Taigi_Engine_LearningRecordKind,
         id: Int64,
@@ -25,7 +43,35 @@ final class LearningRecordsPageTests: XCTestCase {
     private func makeModel(_ records: [Taigi_Engine_LearningRecord]) -> (LearningRecordsPageModel, FakeUserDataClient) {
         let client = FakeUserDataClient()
         client.seedLearningRecords(records)
-        return (LearningRecordsPageModel(client: client), client)
+        return (LearningRecordsPageModel(client: client, settings: settings), client)
+    }
+
+    /// #773: the kind and order picked are where the next page opens, stored
+    /// under desktop-core's keys and spellings (`settings/keys.rs`).
+    func testThePickedKindAndOrder_areWhereTheNextPageOpens() async throws {
+        let (model, _) = makeModel([])
+        XCTAssertEqual(model.kind, .frequency)
+        XCTAssertEqual(model.order, .mostUsed)
+
+        model.kind = .learnedPhrase
+        model.order = .mostRecent
+        XCTAssertEqual(settings.userDefaults.string(forKey: "learningRecordsKind"), "learnedPhrase")
+        XCTAssertEqual(settings.userDefaults.string(forKey: "learningRecordsOrder"), "mostRecent")
+
+        let (reopened, client) = makeModel([])
+        XCTAssertEqual(reopened.kind, .learnedPhrase)
+        XCTAssertEqual(reopened.order, .mostRecent)
+        await reopened.load()
+        XCTAssertEqual(client.lastLearningRecordsQuery?.kind, .learnedPhrase)
+        XCTAssertEqual(client.lastLearningRecordsQuery?.order, .mostRecent)
+    }
+
+    /// A stored spelling no kind or order has reads as the default.
+    func testAnUnknownStoredKindOrOrder_opensOnTheDefault() {
+        settings.userDefaults.set("association", forKey: SettingsStore.Keys.learningRecordsKind.name)
+        settings.userDefaults.set(1, forKey: SettingsStore.Keys.learningRecordsOrder.name)
+        XCTAssertEqual(settings.learningRecordsKind, .frequency)
+        XCTAssertEqual(settings.learningRecordsOrder, .mostUsed)
     }
 
     /// The pickers' values are what the engine is asked for — word frequency
@@ -117,7 +163,8 @@ final class LearningRecordsPageTests: XCTestCase {
         model.kind = .learnedPhrase
         await model.loadFirstPage()
 
-        try await model.addToCustomDictionary(XCTUnwrap(model.list.rows.first { $0.id == 1 }))
+        let listed = try XCTUnwrap(model.list.rows.first { $0.id == 1 })
+        await model.addToCustomDictionary(listed, roman: listed.tl, hanji: listed.text)
 
         XCTAssertEqual(model.message, .done(.dictionaryLearningRecordsAddedToCustomDictionary))
         XCTAssertEqual(model.list.rows.map(\.id), [2])
@@ -128,13 +175,31 @@ final class LearningRecordsPageTests: XCTestCase {
         XCTAssertFalse(model.activity.isWorking)
     }
 
+    /// The word as the user edited it in the Add Word sheet is what lands in
+    /// the custom dictionary; the phrase still leaves this list.
+    func testAddToCustomDictionary_filesTheEditedWord() async throws {
+        let (model, client) = makeModel([record(.learnedPhrase, id: 1)])
+        model.kind = .learnedPhrase
+        await model.loadFirstPage()
+
+        let listed = try XCTUnwrap(model.list.rows.first)
+        await model.addToCustomDictionary(listed, roman: " Ji-1 ", hanji: "字一")
+
+        XCTAssertEqual(model.message, .done(.dictionaryLearningRecordsAddedToCustomDictionary))
+        XCTAssertTrue(model.list.rows.isEmpty)
+        let custom = try client.list(filter: "", limit: 10, offset: 0).rows
+        XCTAssertEqual(custom.map(\.roman), ["Ji-1"])
+        XCTAssertEqual(custom.map(\.hanji), ["字一"])
+    }
+
     /// A frequency row's word lands in the custom dictionary and the add is
     /// said; the row stays listed, still weighting its word.
     func testAddToCustomDictionary_filesTheWordAndKeepsTheFrequencyRow() async throws {
         let (model, client) = makeModel([record(.frequency, id: 1), record(.frequency, id: 2)])
         await model.loadFirstPage()
 
-        try await model.addToCustomDictionary(XCTUnwrap(model.list.rows.first { $0.id == 1 }))
+        let listed = try XCTUnwrap(model.list.rows.first { $0.id == 1 })
+        await model.addToCustomDictionary(listed, roman: listed.tl, hanji: listed.text)
 
         XCTAssertEqual(model.message, .done(.dictionaryLearningRecordsAddedToCustomDictionary))
         XCTAssertEqual(model.list.rows.map(\.id), [1, 2])
@@ -149,7 +214,8 @@ final class LearningRecordsPageTests: XCTestCase {
         model.kind = .learnedPhrase
         await model.loadFirstPage()
 
-        try await model.addToCustomDictionary(XCTUnwrap(model.list.rows.first))
+        let listed = try XCTUnwrap(model.list.rows.first)
+        await model.addToCustomDictionary(listed, roman: listed.tl, hanji: listed.text)
 
         guard case .failure(.dictionaryLearningRecordsWriteFailed, _)? = model.message else {
             return XCTFail("expected the write-failed alert, got \(String(describing: model.message))")

@@ -10,7 +10,7 @@ use super::{
     ContinuousFetchCtx, CustomEntry, CustomReach, LearnedEntry, RawCandidate, COVERAGE_KIND_ABBREV,
     COVERAGE_KIND_PARTIAL_PREFIX,
 };
-use crate::dictionary_reader::{DictionaryRecord, WALKER_COST_UNPRICED};
+use crate::dictionary_reader::{DictionaryRecord, NO_ROWID, WALKER_COST_UNPRICED};
 
 /// Shared tail of every phonetic continuous fetch: merge `custom_dictionary.db`
 /// hits into the dictionary candidates `out`, collapse duplicates equal on
@@ -163,6 +163,7 @@ pub(super) fn record_to_candidate(
     coverage_kind: u8,
 ) -> RawCandidate {
     let DictionaryRecord {
+        rowid,
         bitmask: _,
         frequency,
         syllable_count,
@@ -199,6 +200,7 @@ pub(super) fn record_to_candidate(
     let context_rank = context.rank(&display_text, &canonical_tl);
     let score = calculate_continuous_score(frequency, syllable_count);
     RawCandidate {
+        rowid,
         consumed_span,
         syllable_count,
         display_text,
@@ -281,12 +283,14 @@ pub(super) fn custom_entry_to_candidate(
     // for both the hanji-absent `display_text` fallback and the
     // `(hanji, canonical-TL)` identity key. Populated for hanji-PRESENT
     // entries too (Codex pre-impl 2026-06-03 BLOCK: identity is the pair,
-    // not gated on hanji). TPS-mode `canonical_tl_form` is identity
-    // (Bopomofo, no TL) → `canonical_tl` stays Bopomofo for a TPS-OOV
-    // hanji-absent custom entry; the platform treats a non-TL form as
-    // "no canonical TL" only for the wire-empty case, so the existing
-    // TPS round-trip is unchanged.
-    let canonical_tl = phonetics::api::canonical_tl_form(&roman, input_mode);
+    // not gated on hanji). Under TPS a TL / POJ stored roman folds as TL
+    // mode folds it, so a word committed from a TPS walk shares the
+    // (hanji, canonical TL) identity of the same word committed under TL
+    // (Core Principle 6). TPS-mode `canonical_tl_form` is identity
+    // (Bopomofo, no TL) → `canonical_tl` stays Bopomofo for a Bopomofo
+    // stored row; the platform treats a non-TL form as "no canonical TL"
+    // only for the wire-empty case.
+    let canonical_tl = custom_canonical_tl(&roman, input_mode);
     let display_text = hanji.clone().unwrap_or_else(|| canonical_tl.clone());
     // R5 pair-key (#7): same `(display_text, canonical_tl)` identity as
     // `record_to_candidate`. For a hanji-absent custom/OOV entry
@@ -301,6 +305,7 @@ pub(super) fn custom_entry_to_candidate(
     // `user_weight` / `source_rank` / dedupe, not raw freq.
     let score = calculate_continuous_score(0, syllable_count);
     RawCandidate {
+        rowid: NO_ROWID,
         consumed_span: span,
         syllable_count,
         display_text,
@@ -348,6 +353,7 @@ pub(super) fn learned_entry_to_candidate(
     let syllable_count = tl_syllable_count(&entry.canonical_tl);
     record_to_candidate(
         DictionaryRecord {
+            rowid: NO_ROWID,
             bitmask: 0,
             frequency: 0,
             hanji: Some(entry.hanji.clone()),
@@ -442,6 +448,23 @@ fn dedupe_by_reading(out: &mut Vec<RawCandidate>, reading: fn(&RawCandidate) -> 
     });
 }
 
+/// The canonical TL a custom entry's stored `roman` takes under
+/// `input_mode` — the TL half of its `(hanji, canonical TL)` identity, read
+/// in [`phonetics::api::stored_roman_mode`].
+fn custom_canonical_tl(roman: &str, input_mode: phonetics::InputMode) -> String {
+    phonetics::api::canonical_tl_form(roman, phonetics::api::stored_roman_mode(roman, input_mode))
+}
+
+impl CustomEntry {
+    /// The word this entry commits and counts as under `input_mode`: its
+    /// Hanji, or its canonical TL when it has none.
+    pub fn word(&self, input_mode: phonetics::InputMode) -> String {
+        self.hanji
+            .clone()
+            .unwrap_or_else(|| custom_canonical_tl(&self.roman, input_mode))
+    }
+}
+
 #[cfg(test)]
 mod record_to_candidate_carrier_tests {
     //! v3.5.8 Phase 9 Item 5 — `record_to_candidate` populates the
@@ -454,6 +477,7 @@ mod record_to_candidate_carrier_tests {
 
     fn record(tl: &str, hanji: Option<&str>) -> DictionaryRecord {
         DictionaryRecord {
+            rowid: 1,
             bitmask: 0,
             frequency: 0,
             syllable_count: 1,
@@ -541,6 +565,7 @@ mod item12_custom_dedupe_tests {
     /// isolates the dedupe / source-rank axis.
     fn dict_cand(roman: &str, hanji: Option<&str>, bitmask: u16) -> RawCandidate {
         RawCandidate {
+            rowid: NO_ROWID,
             consumed_span: (0, 6),
             syllable_count: 1,
             display_text: hanji.unwrap_or(roman).to_owned(),

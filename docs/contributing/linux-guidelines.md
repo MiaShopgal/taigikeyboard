@@ -1,6 +1,6 @@
 # Linux Project Guidelines
 
-Mandatory rules for the Linux input method (`linux/`: Fcitx5 addon (primary, C++ over a Rust C ABI)
+Rules for the Linux input method (`linux/`: Fcitx5 addon (primary, C++ over a Rust C ABI)
 + IBus engine (second, pure Rust) + settings window, over `desktop/` + the shared engine). Read before modifying Linux or `desktop/` code. Design
 record: `docs/architecture/linux-roadmap.md`.
 
@@ -10,9 +10,9 @@ record: `docs/architecture/linux-roadmap.md`.
   `make linux-check` on the macOS host: `cargo test --workspace` in `linux/` (native), `cargo clippy
   --workspace --all-targets -- -D warnings` in `linux/` (native: `zbus` + gtk4-rs + libadwaita
   from Homebrew), a real cross build of the engine for `x86_64-unknown-linux-gnu` via `cargo zigbuild`
-  (`brew install zig cargo-zigbuild`; plain `cargo check` stops at the bundled SQLite's C build),
+  (`mise install`; plain `cargo check` stops at the bundled SQLite's C build),
   `cargo fmt -- --check`, the i18n check. The nightly CI job (`linux-build.yml`, not per PR — run `make linux-check` before a Linux PR) adds the real
-  Linux build, the daemon smoke and the `.deb` (`make deb`). These gates prove compilation and the wire's
+  Linux build, the daemon smoke and the `.deb` (`make -C linux deb`). These gates prove compilation and the wire's
   first contract, not behaviour — behaviour is the dogfood run-book's job. Never claim "works
   on Linux".
 - Put logic in `taigi-desktop-core` (host-testable; the oracle rule is `windows-guidelines.md`
@@ -52,7 +52,7 @@ record: `docs/architecture/linux-roadmap.md`.
   built only in the VM and on the Ubuntu CI job; it composes nothing — every effect comes back
   from the FFI as the same `Emit` list the IBus shell replays.
 - Two shells, one contract: a behaviour that differs between the Fcitx5 and IBus shells is a shell
-  bug. Fix it in `taigi-linux-core`, never in one shell.
+  bug. Fix it in `taigi-desktop-core::session` or `taigi-linux-core`, never in one shell.
 
 ## Settings window (GTK 4 + libadwaita)
 

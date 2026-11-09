@@ -8,6 +8,7 @@ A Taiwanese input method for iOS, Android, macOS, Windows, and Linux.
 ![Windows 10+](https://img.shields.io/badge/Windows-10%2B-blue)
 ![Linux Fcitx5 | IBus](https://img.shields.io/badge/Linux-Fcitx5%20%7C%20IBus-orange)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/UFn9RdynPu)
 
 ## Download
 
@@ -64,4 +65,4 @@ Source code: [Apache License 2.0](LICENSE).
 
 **Dictionary data is not Apache-licensed.** Each source keeps its own terms, and one carries a NonCommercial clause, so the compiled dictionary shipped in every app is non-commercial. See [dictionary licenses](dictionary/LICENSE) for terms and attribution, and [third-party licenses](THIRD_PARTY_LICENSES.md) for fonts and vendored code.
 
-Released binaries follow the [code-signing policy](docs/CODE_SIGNING_POLICY.md).
+Released binaries follow the [Code signing policy](docs/CODE_SIGNING_POLICY.md).

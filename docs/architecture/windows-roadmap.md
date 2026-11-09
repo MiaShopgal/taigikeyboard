@@ -55,7 +55,7 @@ Host app (Notepad / Word / Chrome / …) — one process each, possibly several 
 │ TaigiKeyboardSettings.exe (crate taigi-windows-settings, WinUI 3 via windows-reactor│
 │  — WinUI 3 since the W17-C cutover) · self-contained Windows App Runtime beside it  │
 │  NavigationView: General / Appearance / Shortcuts / Custom Dictionary /             │
-│  Dictionary Sources (+ unlisted Dictionary Search)                                  │
+│  Dictionary Sources (+ pinned search)                                               │
 │  custom-dict CRUD + CSV · shortcut recorder (WH_KEYBOARD thread hook) · update      │
 │  check/download/verify/install · `--check-updates` headless (per-user scheduled task)│
 │  The TSF DLL never links or loads WinUI (artifact-inspected, W17).                  │
@@ -271,7 +271,8 @@ IMEs under `references/`. "Codex:" records the ANALYSIS-ONLY verdict and what ch
   first, "switch input method → sign out → sign in" guidance when a host still holds
   the DLL (rakukan `iss:317-335`). **Architectures (Codex): x64 is v1; x86 (WOW64
   hosts) ships once x64 registration/uninstall is proven on a real box; ARM64 is a
-  built target but not published without a native smoke test.** Release =
+  built target but not published without a native smoke test.** Arm64 support:
+  #721, through an Arm64X forwarder (`windows-arm64-roadmap.md`). Release =
   `windows/scripts/release-app.sh` (bash via Git Bash, mirroring
   `macos/scripts/release-app.sh`): clean-tree preflight → cargo release builds → `iscc`
   → optional `signtool` (env-gated) → SHA-256 → `windows/scripts/publish-release.sh`

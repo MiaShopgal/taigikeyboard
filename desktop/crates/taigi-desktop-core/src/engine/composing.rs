@@ -22,7 +22,6 @@ use protos::engine::{
 use crate::keys::CaretDirection;
 
 use super::bridge::{app_config, record_failure, roundtrip};
-use super::lexicon::dictionary_toggles;
 use super::transition::{
     CommitResult, ComposingTransition, ContinuousCandidate, ContinuousFetchResult,
 };
@@ -50,10 +49,10 @@ pub fn append(
     )
 }
 
-/// Applies one Telex key to the pending syllable's tone — or, for `z`,
+/// Applies one Telex key to the pending syllable's tone — or, for `c`,
 /// types the affricate initial the input mode spells (`composing.proto`
 /// `TelexKey`, `engine/composing/src/telex.rs`). Carries the same config
-/// as `append` (`z` resolves by `input_mode`, the prefix by the spacing
+/// as `append` (`c` resolves by `input_mode`, the prefix by the spacing
 /// flags).
 pub fn telex_key(
     key: &str,
@@ -188,7 +187,8 @@ pub fn reset(generation: u64) -> Option<ComposingTransition> {
 ///
 /// `now_ms` is the clock the engine's recency ranking reads. The user's own
 /// data is not an argument: the engine reads its stores itself and ranks in
-/// one call (user-data-engine-roadmap P3b / P5).
+/// one call (user-data-engine-roadmap P3b / P5). The source filter is the
+/// config's dictionary switches (`app_config`).
 pub fn fetch_at_pos(
     settings: &EngineSettings,
     generation: u64,
@@ -196,16 +196,12 @@ pub fn fetch_at_pos(
 ) -> Option<ContinuousFetchResult> {
     let fetch = FetchAtPos {
         now_ms,
-        // The engine resolves the toggles into its source filter itself.
-        toggles: Some(dictionary_toggles(&settings.dictionary_sources)),
         // §34/S22 — positive platform setting → inverted proto disable gate
         // (the field's own comment carries why), so Show Typed Text First ON leaves the
         // preedit literal leading the list and Enter commits what was typed.
         // CROSS-PLATFORM INVARIANT — iOS `ComposingManager.swift` inverts the same
         // setting onto the same field.
         literal_roman_candidate_disabled: !settings.is_literal_roman_candidate_enabled,
-        // The engine reads the user's dictionary only with this setting on.
-        custom_dictionary_disabled: !settings.is_custom_dict_enabled,
     };
     let response = composing_response(
         composing_request::Method::FetchAtPos(fetch),
@@ -229,7 +225,9 @@ pub fn fetch_at_pos(
 /// What a candidate commit round-trips. Every field except `script` comes
 /// verbatim from the `ContinuousCandidate` the user picked — in particular
 /// `consumed_bytes` is the candidate's `consumed_span_end`, an absolute
-/// offset into the pending raw buffer (`composing.proto` `CommitContinuous`).
+/// offset into the text the engine listed — the pending raw buffer, or the
+/// last nailed segment's raw text followed by it (`composing.proto`
+/// `ContinuousCandidate`); the core never reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitContinuousArgs<'a> {
     /// Which of the pick's scripts the document gets, relative to the output

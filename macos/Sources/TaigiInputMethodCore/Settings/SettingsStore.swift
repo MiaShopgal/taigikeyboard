@@ -64,6 +64,13 @@ final class SettingsStore: @unchecked Sendable {
             name: "tpsKeyboardShown",
             defaultValue: false,
         )
+        /// Whether the Telex guide is up while a romanization is typed: flipped
+        /// by its shortcut, kept across mode switches so the guide comes back
+        /// when TPS is left (desktop-core `keys::TELEX_GUIDE_SHOWN`).
+        static let isTelexGuideShown = SettingsKey(
+            name: "telexGuideShown",
+            defaultValue: false,
+        )
         static let isHanjiFirst = SettingsKey(
             name: "isTranslateSwapped",
             defaultValue: EngineSettings.defaults.isHanjiFirst,
@@ -262,6 +269,19 @@ final class SettingsStore: @unchecked Sendable {
         static let selectedSettingsPane = SettingsKey(
             name: "selectedSettingsPane",
             defaultValue: SettingsPane.general,
+        )
+
+        /// The Learning Records page's kind and order pickers, kept like the
+        /// pane above so the page reopens on the last pick (#773). Stored as
+        /// desktop-core's spellings (`keys::LEARNING_RECORDS_KIND` /
+        /// `LEARNING_RECORDS_ORDER`), not the proto's integers.
+        static let learningRecordsKind = SettingsKey(
+            name: "learningRecordsKind",
+            defaultValue: Taigi_Engine_LearningRecordKind.frequency,
+        )
+        static let learningRecordsOrder = SettingsKey(
+            name: "learningRecordsOrder",
+            defaultValue: Taigi_Engine_LearningRecordOrder.mostUsed,
         )
 
         /// The candidate window's layout. Presentation-only — the engine never
@@ -515,6 +535,20 @@ final class SettingsStore: @unchecked Sendable {
         inputMode == .tps && isTpsKeyboardShown
     }
 
+    /// The user's wish for the Telex guide, whatever the mode.
+    var isTelexGuideShown: Bool {
+        get { bool(Keys.isTelexGuideShown) }
+        set { userDefaults.set(newValue, forKey: Keys.isTelexGuideShown.name) }
+    }
+
+    /// Whether the Telex guide should be up: asked for, and TPS, which types
+    /// no Telex keys, is not being typed.
+    /// CROSS-PLATFORM INVARIANT — mirrors desktop-core
+    /// `SettingsDocument::is_telex_guide_wanted`.
+    var isTelexGuideWanted: Bool {
+        inputMode != .tps && isTelexGuideShown
+    }
+
     /// The symbol picker's recent picks.
     var recentSymbols: RecentSymbols {
         RecentSymbols(stringArray(Keys.recentSymbols))
@@ -579,6 +613,7 @@ final class SettingsStore: @unchecked Sendable {
             Keys.keyboardLayout.name,
             Keys.lastRomanizationMode.name,
             Keys.isTpsKeyboardShown.name,
+            Keys.isTelexGuideShown.name,
             Keys.toneInputScheme.name,
             Keys.isHanjiFirst.name,
             Keys.isAutoSpaceEnabled.name,
@@ -673,6 +708,42 @@ final class SettingsStore: @unchecked Sendable {
     var selectedSettingsPane: SettingsPane {
         get { choice(Keys.selectedSettingsPane) }
         set { userDefaults.set(newValue.rawValue, forKey: Keys.selectedSettingsPane.name) }
+    }
+
+    /// The kind the Learning Records page reopens on.
+    var learningRecordsKind: Taigi_Engine_LearningRecordKind {
+        get { spelledChoice(Keys.learningRecordsKind, Taigi_Engine_LearningRecordKind.storedSpellings) }
+        set {
+            setSpelledChoice(newValue, Keys.learningRecordsKind, Taigi_Engine_LearningRecordKind.storedSpellings)
+        }
+    }
+
+    /// The order the Learning Records page reopens on.
+    var learningRecordsOrder: Taigi_Engine_LearningRecordOrder {
+        get { spelledChoice(Keys.learningRecordsOrder, Taigi_Engine_LearningRecordOrder.storedSpellings) }
+        set {
+            setSpelledChoice(newValue, Keys.learningRecordsOrder, Taigi_Engine_LearningRecordOrder.storedSpellings)
+        }
+    }
+
+    /// `choice(_:)` for a value whose own raw value is not its stored
+    /// spelling (a proto enum's integer): `spellings` pairs each value with it.
+    private func spelledChoice<Value: Equatable>(
+        _ key: SettingsKey<Value>,
+        _ spellings: [(value: Value, spelling: String)],
+    ) -> Value {
+        let stored = userDefaults.string(forKey: key.name)
+        return spellings.first { $0.spelling == stored }?.value ?? key.defaultValue
+    }
+
+    /// Writes `value`'s spelling; a value `spellings` does not name (a proto
+    /// `UNRECOGNIZED`) removes the key, so the default reads back.
+    private func setSpelledChoice<Value: Equatable>(
+        _ value: Value,
+        _ key: SettingsKey<Value>,
+        _ spellings: [(value: Value, spelling: String)],
+    ) {
+        userDefaults.set(spellings.first { $0.value == value }?.spelling, forKey: key.name)
     }
 
     /// The update-check bookkeeping. Engine-invisible like `displayLanguage`,
@@ -826,4 +897,22 @@ private final class DefaultsKeyObserver: NSObject {
         }
         onChange()
     }
+}
+
+extension Taigi_Engine_LearningRecordKind {
+    /// Each kind the page lists, with its stored spelling — desktop-core's
+    /// `SettingChoice` raw strings (`settings/learning_records.rs`).
+    static let storedSpellings: [(value: Self, spelling: String)] = [
+        (.frequency, "frequency"),
+        (.learnedPhrase, "learnedPhrase"),
+    ]
+}
+
+extension Taigi_Engine_LearningRecordOrder {
+    /// Each order the page offers, with its stored spelling — desktop-core's
+    /// `SettingChoice` raw strings (`settings/learning_records.rs`).
+    static let storedSpellings: [(value: Self, spelling: String)] = [
+        (.mostUsed, "mostUsed"),
+        (.mostRecent, "mostRecent"),
+    ]
 }

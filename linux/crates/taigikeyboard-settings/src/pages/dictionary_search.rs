@@ -1,7 +1,8 @@
-//! Dictionary Search: a search field, the first five hits, each with its source
-//! badges and buttons to look the reading up in the MOE dictionary or ChhoeTaigi. Port of
-//! the Windows `dictionary_search.rs`. Built but UNLISTED, as on Windows:
-//! reached only by `--pane dictionarySearch`. The lookup
+//! The Manage Dictionaries search, the bottom bar of that pane's toolbar
+//! view (#792): a search field, and above it the first five hits, each with
+//! its source badges and buttons to look the reading up in the MOE
+//! dictionary or ChhoeTaigi — mobile's `DictionarySearchPanel`, in
+//! libadwaita widgets. Port of the Windows `dictionary_search.rs`. The lookup
 //! (`taigi_desktop_core::engine::dictionary_search`) — the engine's
 //! dictionaries and the custom-dictionary query, plus the dictionaries'
 //! first load — runs off the UI thread; the newest query wins by
@@ -39,24 +40,24 @@ struct State {
     document: SettingsDocument,
 }
 
-pub struct DictionarySearchPage {
+/// Around the bar's content, the toolbar's own spacing.
+const BAR_INSET: i32 = 6;
+
+pub struct DictionarySearchBar {
     shell: Shell,
     strings: StringResolver,
     state: RefCell<State>,
     results: gtk::ListBox,
+    /// The hits' scroller, hidden while the query is empty so the bar is
+    /// the field alone.
+    scroller: gtk::ScrolledWindow,
     empty: gtk::Label,
 }
 
-pub fn build<'a>(mut context: PageContext<'a>, page: &adw::PreferencesPage) -> PageContext<'a> {
-    let group = adw::PreferencesGroup::new();
+/// Adds the search as `view`'s bottom bar — none in a window without user
+/// data, which has no custom dictionary to search.
+pub fn build<'a>(mut context: PageContext<'a>, view: &adw::ToolbarView) -> PageContext<'a> {
     if !context.has_user_data {
-        group.add(
-            &gtk::Label::builder()
-                .label(context.strings.resolve(StringKey::DictionaryNoResults))
-                .css_classes(["dim-label"])
-                .build(),
-        );
-        page.add(&group);
         return context;
     }
     let query = gtk::SearchEntry::new();
@@ -65,7 +66,6 @@ pub fn build<'a>(mut context: PageContext<'a>, page: &adw::PreferencesPage) -> P
             .strings
             .resolve(StringKey::DictionarySearchPlaceholder),
     ));
-    group.add(&query);
     let results = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["boxed-list"])
@@ -78,9 +78,28 @@ pub fn build<'a>(mut context: PageContext<'a>, page: &adw::PreferencesPage) -> P
         .visible(false)
         .build();
     results.set_placeholder(Some(&empty));
-    group.add(&results);
-    page.add(&group);
-    let this = Rc::new(DictionarySearchPage {
+    // Results ABOVE the field, as mobile pops them up over its bar. The
+    // five rows at full height, with one opened (`VISIBLE_RESULT_LIMIT`);
+    // the scroller only takes over in a window too short for them.
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .child(&results)
+        .visible(false)
+        .build();
+    let panel = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(BAR_INSET)
+        .margin_top(BAR_INSET)
+        .margin_bottom(BAR_INSET)
+        .margin_start(BAR_INSET)
+        .margin_end(BAR_INSET)
+        .build();
+    panel.append(&scroller);
+    panel.append(&query);
+    // The same width as the page's groups above it.
+    view.add_bottom_bar(&adw::Clamp::builder().child(&panel).build());
+    let this = Rc::new(DictionarySearchBar {
         shell: context.shell.clone(),
         strings: *context.strings,
         state: RefCell::new(State {
@@ -88,6 +107,7 @@ pub fn build<'a>(mut context: PageContext<'a>, page: &adw::PreferencesPage) -> P
             ..State::default()
         }),
         results,
+        scroller,
         empty,
     });
     // `changed`, not `search-changed` (GTK's own 150 ms delay): the
@@ -110,7 +130,7 @@ pub fn build<'a>(mut context: PageContext<'a>, page: &adw::PreferencesPage) -> P
     context
 }
 
-impl DictionarySearchPage {
+impl DictionarySearchBar {
     fn query_changed(self: &Rc<Self>, query: String) {
         let generation = {
             let mut state = self.state.borrow_mut();
@@ -183,50 +203,77 @@ impl DictionarySearchPage {
         for result in state.results.iter().take(VISIBLE_RESULT_LIMIT) {
             self.results.append(&self.result_row(result));
         }
-        let has_query = !state.query.trim().is_empty();
+        // The label is the list's placeholder, inside the scroller: hidden
+        // with it while the query is empty.
+        self.scroller.set_visible(!state.query.trim().is_empty());
         self.empty
-            .set_visible(has_query && state.results.is_empty() && !state.is_searching);
+            .set_visible(state.results.is_empty() && !state.is_searching);
     }
 
     /// One hit: the romanization and the hanji, the source badges as the
-    /// subtitle (one per distinct word — the three supplements share one),
-    /// and the two lookups as buttons.
-    fn result_row(&self, result: &DictionarySearchResult) -> adw::ActionRow {
-        // One badge per distinct word (by key: the three supplements share
-        // one).
-        let mut keys: Vec<StringKey> = Vec::new();
-        for source in &result.sources {
-            let key = source.badge_key();
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-        let badges: Vec<&str> = keys.iter().map(|key| self.strings.resolve(*key)).collect();
+    /// subtitle (one per distinct word — the three supplements share one).
+    /// A click anywhere on the row unfolds its lookups under it, one row
+    /// each, and folds any other open hit — Android's `SearchResultRow`, in
+    /// libadwaita's own expanding row.
+    fn result_row(&self, result: &DictionarySearchResult) -> gtk::Widget {
+        let badges: Vec<&str> = result
+            .badge_keys()
+            .into_iter()
+            .map(|key| self.strings.resolve(key))
+            .collect();
         let title = match &result.hanji {
             Some(hanji) => format!("{}  {hanji}", result.roman),
             None => result.roman.clone(),
         };
-        // Dictionary and user text, never markup.
-        let row = adw::ActionRow::builder()
+        let lookups: Vec<(String, StringKey)> = [
+            (result.moe_url(), StringKey::DictionaryLookupMoe),
+            (result.chhoe_url(), StringKey::DictionaryLookupChhoe),
+        ]
+        .into_iter()
+        .filter_map(|(url, label)| url.map(|url| (url, label)))
+        .collect();
+        if lookups.is_empty() {
+            // A reading that makes no URL: the row, with nothing to unfold.
+            // Dictionary and user text, never markup.
+            return adw::ActionRow::builder()
+                .title(title)
+                .subtitle(badges.join(" · "))
+                .use_markup(false)
+                .build()
+                .upcast();
+        }
+        let row = adw::ExpanderRow::builder()
             .title(title)
             .subtitle(badges.join(" · "))
             .use_markup(false)
             .build();
-        for (url, label) in [
-            (result.moe_url(), StringKey::DictionaryLookupMoe),
-            (result.chhoe_url(), StringKey::DictionaryLookupChhoe),
-        ] {
-            let Some(url) = url else { continue };
-            let button = gtk::Button::builder()
-                .label(self.strings.resolve(label))
-                .valign(gtk::Align::Center)
-                .css_classes(["flat"])
+        for (url, label) in lookups {
+            let lookup = adw::ActionRow::builder()
+                .title(self.strings.resolve(label))
+                .activatable(true)
                 .build();
+            lookup.add_suffix(&gtk::Image::from_icon_name("adw-external-link-symbolic"));
             let shell = self.shell.clone();
-            button.connect_clicked(move |_| shell.open_url(&url));
-            row.add_suffix(&button);
+            lookup.connect_activated(move |_| shell.open_url(&url));
+            row.add_row(&lookup);
         }
-        row
+        let list = self.results.downgrade();
+        row.connect_expanded_notify(move |opened| {
+            let Some(list) = list.upgrade() else { return };
+            if !opened.is_expanded() {
+                return;
+            }
+            let mut index = 0;
+            while let Some(other) = list.row_at_index(index) {
+                if let Some(other) = other.downcast_ref::<adw::ExpanderRow>() {
+                    if other != opened {
+                        other.set_expanded(false);
+                    }
+                }
+                index += 1;
+            }
+        });
+        row.upcast()
     }
 }
 

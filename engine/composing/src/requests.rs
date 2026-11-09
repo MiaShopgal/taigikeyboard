@@ -10,7 +10,8 @@
 //! the pure transition table. After v3.5.9 A2 the candidate-assembly
 //! 6-step seam lives in [`crate::continuous::assemble_candidates`];
 //! dispatch only handles the phase/hanji guards, the proto →
-//! domain hoists (`mode`, the source filter from the toggles), and wire encoding.
+//! domain hoists (`mode`, the source filter from `AppConfig.dictionary_sources`),
+//! and wire encoding.
 //!
 //! The mode-aware key construction lives in `composing::continuous`
 //! per the Phase 5 module contract pinned in
@@ -25,15 +26,18 @@
 use crate::api::{
     CaretDirection, CommitScript, ComposingError, ContinuousPick, Engine, Intent, Phase, UserRows,
 };
-use crate::continuous::{assemble_candidates, retain_first_by_key, roman_reading_eq, ListShape};
+use crate::continuous::{assemble_candidates, retain_first_by_key, ListShape};
 use crate::derived::buffer_input_mode;
+use crate::WordListStart;
+use lexicon::dictionary_reader::NO_ROWID;
 use lexicon::{
     classification::is_hanji, ConsumedSpan, LearnedEntry, RawCandidate, SyllableInventory,
     COVERAGE_KIND_FULL,
 };
+use phonetics::api::roman_reading_eq;
 use protos::engine::{
     composing_request, AppConfig, CandidateMessage, CommitScript as WireCommitScript,
-    ComposingRequest, ComposingResponse, ContinuousResponse, DictionarySourceToggles, FetchAtPos,
+    ComposingRequest, ComposingResponse, ContinuousResponse, FetchAtPos,
 };
 use ranking::WALKER_COST_UNPRICED;
 
@@ -107,10 +111,8 @@ pub fn decode_intent(req: &ComposingRequest) -> Result<Intent, ComposingError> {
 }
 
 /// The fetch intent for a wire `FetchAtPos`, ranked with `user_rows` and
-/// `context`. Its source filter is the request's toggles resolved by the
-/// lexicon encoder (every dictionary off → `0`, no dictionary candidates,
-/// §57), or every source when the request carries no toggles (fixtures, an
-/// un-wired sender — see the `FetchAtPos` proto comment).
+/// `context`. Its source filter is the request config's
+/// (`source_filter_bitmask`), resolved when the fetch is answered.
 pub fn fetch_at_pos_intent(
     fetch: &FetchAtPos,
     user_rows: UserRows,
@@ -118,17 +120,21 @@ pub fn fetch_at_pos_intent(
 ) -> Intent {
     Intent::FetchAtPos {
         now_ms: fetch.now_ms,
-        enabled_sources_bitmask: source_filter_bitmask(fetch.toggles.as_ref()),
         literal_roman_candidate_disabled: fetch.literal_roman_candidate_disabled,
         user_rows,
         context,
     }
 }
 
-/// The dictionary source filter `toggles` resolve to: every source when a
-/// request names none, `0` when it turns every dictionary off (§57).
-pub(crate) fn source_filter_bitmask(toggles: Option<&DictionarySourceToggles>) -> u32 {
-    toggles.map_or(u32::MAX, lexicon::api::dictionary_filter_bitmask)
+/// The dictionary source filter `config.dictionary_sources` resolves to — the
+/// one filter the fetch, the TPS Hanji conversion and the nailed-join compound
+/// oracle apply: every source when the request names no switches (fixtures,
+/// an un-wired sender), `0` when it turns every dictionary off (§57).
+pub(crate) fn source_filter_bitmask(config: &AppConfig) -> u32 {
+    config
+        .dictionary_sources
+        .as_ref()
+        .map_or(u32::MAX, lexicon::api::dictionary_filter_bitmask)
 }
 
 /// Pure dispatch entry: decode the proto request into an `Intent` and
@@ -167,7 +173,6 @@ pub fn query(intent: &Intent, engine: &Engine, config: &AppConfig) -> ComposingR
     match intent {
         Intent::FetchAtPos {
             now_ms,
-            enabled_sources_bitmask,
             literal_roman_candidate_disabled,
             user_rows,
             context,
@@ -176,7 +181,6 @@ pub fn query(intent: &Intent, engine: &Engine, config: &AppConfig) -> ComposingR
             *now_ms,
             user_rows,
             context,
-            *enabled_sources_bitmask,
             *literal_roman_candidate_disabled,
             config,
         ),
@@ -199,20 +203,24 @@ pub fn query(intent: &Intent, engine: &Engine, config: &AppConfig) -> ComposingR
 /// phase/hanji guards and the wire encoding around it.
 ///
 /// Under a Hanji conversion the request asks for, the list is the word
-/// before the caret's (H4): the tail from [`Engine::word_list_start`] as
-/// [`ListShape::Word`], spans shifted back into the tail's coordinates.
+/// before the caret's (H4): the text from [`Engine::word_list_start`] as
+/// [`ListShape::Word`], spans shifted back into the tail's coordinates — or,
+/// for the last nailed segment's list, left in those of the tail its pick
+/// re-opens (that segment's raw text followed by the tail).
 fn handle_fetch_at_pos(
     engine: &Engine,
     now_ms: i64,
     user_rows: &UserRows,
     context: &ranking::ContextRanks,
-    enabled_sources_bitmask: u32,
     literal_roman_candidate_disabled: bool,
     config: &AppConfig,
 ) -> ComposingResponse {
     let snapshot = engine.snapshot(config);
     let state = engine.snapshot_state();
-    let Phase::Continuous { raw: tail, .. } = &state.phase else {
+    let Phase::Continuous {
+        raw: tail, nailed, ..
+    } = &state.phase
+    else {
         return snapshot;
     };
     let word_list_start = engine.word_list_start(config);
@@ -220,8 +228,10 @@ fn handle_fetch_at_pos(
         Some(_) => ListShape::Word,
         None => ListShape::Sentence,
     };
-    let list_start = word_list_start.unwrap_or(0);
-    let raw = &tail[list_start..];
+    let (listed, list_start) = word_list_start
+        .unwrap_or(WordListStart::InTail(0))
+        .listed(nailed, tail);
+    let raw = listed.as_str();
     // v3.5.8 Phase 9 Item 11 — hanji guard (§15.3.E). The only input
     // modes are TL/POJ/TPS romanization; CJK never legitimately enters
     // the composing buffer. When it leaks in (paste, stale selection
@@ -246,8 +256,13 @@ fn handle_fetch_at_pos(
     // internally — pre-C-3b had a parallel `is_tps: bool` arg that
     // duplicated this axis (`is_tps = contains_tps(raw)`, dual source
     // of truth). Dropping the bool eliminates split-brain risk. The whole
-    // tail decides, also for a list starting inside it.
-    let mode = buffer_input_mode(tail, config);
+    // tail decides, also for a list starting inside it; the last nailed
+    // segment's list reads that segment too (the tail after a pick may be
+    // empty or tone marks only).
+    let mode = match word_list_start {
+        Some(WordListStart::LastNailed) => buffer_input_mode(raw, config),
+        _ => buffer_input_mode(tail, config),
+    };
     // Learned phrases (§50): one row per reading, the most-learned
     // separator form first.
     let learned = first_learned_per_reading(&user_rows.learned);
@@ -255,9 +270,9 @@ fn handle_fetch_at_pos(
     // (key build → span-local/partial fetch → recase → walker slot-0
     // prepend → POJ presentation pass → return). Wire encoding (step 6)
     // happens below via `raw_to_proto_candidate` + `with_continuous`.
-    // `enabled_sources_bitmask` (resolved at decode) flows into
-    // `ContinuousFetchCtx` so the span-local + partial-prefix fetchers
-    // apply the same `Filter` the Tab3 browse path uses.
+    // The config's source filter flows into `ContinuousFetchCtx` so the
+    // span-local + partial-prefix fetchers apply the same `Filter` the Tab3
+    // browse path uses.
     let mut candidates = assemble_candidates(
         raw,
         &user_rows.frequency,
@@ -265,7 +280,7 @@ fn handle_fetch_at_pos(
         &user_rows.custom,
         &learned,
         mode,
-        enabled_sources_bitmask,
+        source_filter_bitmask(config),
         context,
         config.rendered_syllable_joiner(),
         config.force_lowercase_nasal_marker,
@@ -406,6 +421,7 @@ fn literal_roman_candidate(
     let learning_text = crate::derived::learning_text(raw, config);
     let canonical_tl = phonetics::api::canonical_tl_form(&learning_text, mode);
     Some(RawCandidate {
+        rowid: NO_ROWID,
         consumed_span: (0, raw.len() as u32),
         syllable_count: literal.split('-').count().min(u8::MAX as usize) as u8,
         display_text: learning_text,
@@ -551,6 +567,7 @@ mod tests {
     #[test]
     fn raw_to_proto_candidate_propagates_roman_and_some_hanji() {
         let raw = RawCandidate {
+            rowid: NO_ROWID,
             consumed_span: (0, 7),
             syllable_count: 2,
             display_text: "臺灣".to_owned(),
@@ -577,6 +594,7 @@ mod tests {
     #[test]
     fn raw_to_proto_candidate_emits_none_hanji_for_tailo() {
         let raw = RawCandidate {
+            rowid: NO_ROWID,
             consumed_span: (0, 3),
             syllable_count: 1,
             display_text: "tāi".to_owned(),
@@ -607,6 +625,7 @@ mod tests {
     fn dedupe_display_roman_collapses_same_roman_across_spans() {
         fn row(roman: &str, hanji: Option<&str>, span: (u32, u32)) -> RawCandidate {
             RawCandidate {
+                rowid: NO_ROWID,
                 consumed_span: span,
                 syllable_count: 1,
                 display_text: hanji.unwrap_or(roman).to_owned(),
@@ -658,6 +677,8 @@ mod tests {
             force_lowercase_nasal_marker: false,
             tps_or_maps_to_er: false,
             hanji_conversion: None,
+            dictionary_sources: None,
+            custom_dictionary_disabled: false,
         }
     }
 

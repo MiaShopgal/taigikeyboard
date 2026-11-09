@@ -35,7 +35,7 @@ use crate::api::{
 use crate::commit_text::{
     commit_resolution, finalized_composition_resolution, resolve_commit_text,
 };
-use crate::conversion::{next_raw_span, PreviousTail};
+use crate::conversion::{next_raw_span, PreviousTail, WordListStart};
 use crate::derived::{
     buffer_input_mode, derived_display, display_caret_utf16, learning_text,
     strip_tps_separator_markers,
@@ -184,6 +184,10 @@ fn telex_key(
     match &state.phase {
         Phase::Idle => match crate::telex::apply_telex_key("", key, mode) {
             Some(text) => begin_composition(state, text, config, frequency),
+            // An idle `f` is the `-` key: the neutral-tone marker (§21).
+            None if crate::telex::is_hyphen_key(key) => {
+                begin_composition_or_insert_leading_hyphens(state, "-".into(), config, frequency)
+            }
             None => noop(state, config),
         },
         Phase::Continuous {
@@ -988,7 +992,7 @@ fn nail_segment(
         let terminal = next_word_terminal(canonical, next_word_roman, nailed);
         // Learned phrases (§50): the whole composition, if it was a
         // sequence of hanji picks, becomes one learned pair.
-        let learned = learned_phrase(&new_nailed);
+        let learned = learned_phrase(&new_nailed, config);
         let applied = Applied {
             response: finalize(state, combined, terminal),
             learned,
@@ -1091,9 +1095,47 @@ fn finalize_composition(
     response
 }
 
+/// Put the last nailed segment's raw text back in front of the pending tail
+/// for a pick from that segment's list ([`WordListStart::LastNailed`]): the
+/// pick nails again from the start at once, so the re-opened text is never
+/// walked or shown. `false`, the state untouched, when there is no segment
+/// or the pick does not fit the re-opened text. The usage the earlier pick
+/// recorded stays recorded, as an un-nail leaves it.
+fn reopen_last_nailed_for_pick(
+    state: &mut EngineState,
+    consumed_bytes: usize,
+    display_text: &str,
+) -> bool {
+    let Phase::Continuous {
+        raw,
+        caret,
+        nailed,
+        conversion,
+    } = &mut state.phase
+    else {
+        return false;
+    };
+    let Some(last) = nailed.last() else {
+        return false;
+    };
+    let reopened = format!("{}{raw}", last.raw_text);
+    if !is_pick_of(&reopened, 0, consumed_bytes, display_text) {
+        return false;
+    }
+    nailed.pop();
+    // At the start of the re-opened text, where the list began; the pick
+    // that follows sets its own.
+    *caret = 0;
+    *raw = reopened;
+    // The held words describe the old tail; the pick walks what follows it.
+    *conversion = None;
+    true
+}
+
 /// A pick under a Hanji conversion the request asks for (H4): the list it
 /// came from started at the word before the caret
-/// (`crate::conversion::word_list_start`, `start`), so what the preedit shows before that start
+/// (`crate::conversion::word_list_start`, `start` — `0` after
+/// [`reopen_last_nailed_for_pick`] put the last nailed segment back), so what the preedit shows before that start
 /// is nailed as shown and not picked — each word and the glyphs between them,
 /// byte for byte, so un-nailing restores what was typed — then the pick is
 /// nailed, and the rest of the tail is walked again with the caret at its
@@ -1177,7 +1219,10 @@ fn commit_as_shown(state: &mut EngineState, config: &AppConfig) -> Applied {
         return noop(state, config).into();
     }
     let (terminal, learned) = if raw.is_empty() {
-        (next_word_nailed_terminal(nailed), learned_phrase(nailed))
+        (
+            next_word_nailed_terminal(nailed),
+            learned_phrase(nailed, config),
+        )
     } else {
         (next_word_clear_for_new_composing(), None)
     };
@@ -1254,7 +1299,7 @@ fn commit_continuous(
         Phase::Idle => None,
     };
     let (mut applied, outcome) = match word_list_start {
-        Some(start) => nail_pick_keeping_composition(
+        Some(WordListStart::InTail(start)) => nail_pick_keeping_composition(
             state,
             resolved.text.clone(),
             pick,
@@ -1262,6 +1307,20 @@ fn commit_continuous(
             config,
             frequency,
         ),
+        Some(WordListStart::LastNailed) => {
+            if reopen_last_nailed_for_pick(state, pick.consumed_bytes, &resolved.text) {
+                nail_pick_keeping_composition(
+                    state,
+                    resolved.text.clone(),
+                    pick,
+                    0,
+                    config,
+                    frequency,
+                )
+            } else {
+                (noop(state, config).into(), CommitOutcome::Ignored)
+            }
+        }
         None => nail_segment(state, resolved.text.clone(), pick, config, frequency),
     };
     if outcome != CommitOutcome::Ignored {
@@ -1593,7 +1652,7 @@ fn next_word_word_selected(
 /// separator, USER 2026-09-22). The cap counts
 /// the joined TL, not the segments' echoed `syllable_count` — that is
 /// platform input, and the TL is what the phrase stores.
-fn learned_phrase(nailed: &[NailedSegment]) -> Option<LearnedEntry> {
+fn learned_phrase(nailed: &[NailedSegment], config: &AppConfig) -> Option<LearnedEntry> {
     if nailed.len() < 2 {
         return None;
     }
@@ -1609,7 +1668,7 @@ fn learned_phrase(nailed: &[NailedSegment]) -> Option<LearnedEntry> {
         }
         hanji.push_str(h);
     }
-    let canonical_tl = canonical_separators(&crate::api::learned_reading(nailed));
+    let canonical_tl = canonical_separators(&crate::api::learned_reading(nailed, config));
     let syllable_count = phonetics::api::tl_syllables(&canonical_tl).count();
     if syllable_count == 0 || syllable_count > MAX_LEARNED_PHRASE_SYLLABLES {
         return None;

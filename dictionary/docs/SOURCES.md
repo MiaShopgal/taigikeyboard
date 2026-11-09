@@ -10,10 +10,10 @@ current-at-release values when cutting a dictionary refresh.
 - **Publisher**: 中華民國教育部 (MoE Taiwan)
 - **Origin URL**: <https://sutian.moe.edu.tw/>
 - **Format**: ODS (OpenDocument Spreadsheet, 19 sheets in the committed capture)
-- **Captured**: `data/raw/kautian.ods` on 2026-10-29 from
+- **Captured**: `data/raw/kautian.ods` on 2026-11-02 from
   <https://sutian.moe.edu.tw/media/senn/ods/kautian.ods>.
-  Upstream Last-Modified: 2026-10-28 18:04:13 UTC; SHA-256:
-  `a050babbac724fbf21d675f9d20222281b87320d6648701d402b109fae4899d3`.
+  Upstream Last-Modified: 2026-11-01 18:04:10 UTC; SHA-256:
+  `c495f5322980a1cb9e318d27469ca585e673f2db2edc027bec503e6314fe494e`.
 - **Licence**: **CC BY-ND 3.0 TW** (創用CC 姓名標示-禁止改作 3.0 臺灣) — verified 2026-09-05 against the publisher's copyright notice, <https://sutian.moe.edu.tw/zh-hant/piantsip/pankhuan-singbing/>. Covers text and audio content (文字、音檔內容). **Commercial use permitted; no NonCommercial term.** This file previously recorded CC BY-NC 4.0, which was wrong. Only Hanji + romanization are taken — see `dictionary/LICENSE` for why CC BY-ND permits that.
 - **Notes**: Multi-sheet; pipeline `select`/`expand`/`merge` stages
   handle the pivoting. Largest single source (~49k rows).
@@ -146,10 +146,13 @@ current-at-release values when cutting a dictionary refresh.
 ### dev — 開發者補充辭典 (supplementary/dev/)
 - **Publisher**: TaigiKeyboard maintainers
 - **Origin URL**: internal (repo-native)
-- **Format**: CSV (`data/dev.csv`)
+- **Format**: CSV (`data/dev.csv`, `data/khinsiann.csv`)
 - **Captured**: repo-native; maintained by hand
 - **Licence**: same as repo
-- **Notes**: Targeted coverage gaps uncovered during dogfooding.
+- **Notes**: `dev.csv` — targeted coverage gaps uncovered during dogfooding.
+  `khinsiann.csv` — neutral-tone pieces that open with `--` (`--ah`, 起來
+  `--khí-lâi`), imported from the maintainer's Han-Lo lexicon; Hanji
+  spellings drop the leading `--`, fully romanized ones are stored without hanzi.
 
 ### lkk — LKK-derived spelling supplement (supplementary/lkk/)
 - **Maintainer**: This project maintains the selected spelling/reading pairs.
@@ -162,15 +165,15 @@ current-at-release values when cutting a dictionary refresh.
 - **Reference checked**: 2026-10-17, spreadsheet titled as updated on 2024-05-10.
   The original 58-pair subset was added on 2026-03-21 in commit
   `31d41453d9cb` (old PR #103), with no recorded selection rule.
-- **Licence**: **Unverified** — no open-data licence or explicit redistribution
-  grant was identified on the source page, embedded spreadsheet, foundation
-  homepage, or publication masthead when checked on 2026-10-17. Citation and
-  curation are not evidence of a redistribution licence.
+- **Licence**: CC BY, stated by the maintainer on 2026-11-06; version not
+  recorded. Attribution: 李江却台語文教基金會. The source page, embedded
+  spreadsheet, foundation homepage, and publication masthead, checked on
+  2026-10-17, carry no licence statement of their own.
 - **Notes**: A project-maintained supplement informed by LKK recommendations,
   not a complete or official LKK dataset. Each row stores an explicit
-  `(hanzi, canonical-TL)` pair whose spelling contains both Hanji and Latin
-  letters. Fully romanized and all-Hanji spellings are excluded. Current total:
-  82 unique pairs. Tests enforce mixed-script spellings, pair uniqueness and
+  `(hanzi, canonical-TL)` pair whose spelling mixes Hanji and Latin letters or,
+  fully romanized, equals its reading. All-Hanji spellings are excluded. Current
+  total: 468 unique pairs. Tests enforce spelling shape, pair uniqueness and
   exact MoE-pair and leading-`--` exclusions. The source pipeline does not
   regenerate this CSV. The aggregate build adds source bit 11 to matching
   entries in other dictionaries or inserts new pairs.

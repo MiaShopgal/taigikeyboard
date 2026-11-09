@@ -49,6 +49,11 @@ pub fn is_attaching_punctuation(text: &str) -> bool {
     crate::punctuation::is_attaching_punctuation(text)
 }
 
+/// Whether text is a joiner, which takes the place of an auto space (§23).
+pub fn is_joiner_punctuation(text: &str) -> bool {
+    crate::punctuation::is_joiner_punctuation(text)
+}
+
 pub(crate) fn capitalize_first(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
@@ -476,11 +481,11 @@ fn is_combining(c: char) -> bool {
 //        Exposed so the iOS+Android fixture suite can exercise them.
 
 pub fn poj_display_to_tl_display(text: &str) -> String {
-    rewrite_display(text, System::Tl, false)
+    rewrite_display(text, System::Tl, false, DisplayCase::Keep)
 }
 
 pub fn tl_display_to_poj_display(text: &str) -> String {
-    rewrite_display(text, System::Poj, false)
+    rewrite_display(text, System::Poj, false, DisplayCase::Keep)
 }
 
 /// §55 — `roman` with the separator at every typed boundary replaced by
@@ -599,6 +604,17 @@ pub fn push_syllable_joiner_run(out: &mut String, run_len: usize, joiner: &str) 
     }
 }
 
+/// The mode a stored custom-dictionary `roman` is read in when the user types
+/// in `mode`: under TPS a TL / POJ roman (no Bopomofo) is read as TL, so its
+/// walker key and its `(hanji, canonical TL)` identity agree with TL mode's;
+/// otherwise `mode` itself. The one rule both derive from.
+pub fn stored_roman_mode(roman: &str, mode: InputMode) -> InputMode {
+    match mode {
+        InputMode::Tps if !contains_tps(roman) => InputMode::Tl,
+        mode => mode,
+    }
+}
+
 /// v3.5.9 B-4 — mode-aware canonicalizer for the `user_frequency.db`
 /// commit key (`RawCandidate.display_text`). Folds Taigi-script
 /// romanization onto canonical TL display form so a romanization-only
@@ -618,29 +634,21 @@ pub fn push_syllable_joiner_run(out: &mut String, run_len: usize, joiner: &str) 
 /// returns the original token. Both cases mean `Tl` mode for ordinary
 /// TL custom entries is observably identity at the byte level.
 ///
-/// **Bounded non-idempotence — CapsLock input** (Codex pre-impl
-/// 2026-05-21 SHOULD): `rewrite_token` lowercases for the parse and
-/// only title-cases its assembled output via `capitalize_first(_)` per
-/// hyphen-split sub-token, so a fully uppercase Taigi-shaped token
-/// like `TÂI-GÍ` (POJ) or `TSÁI-GÍ` (TL) round-trips as `Tâi-Gí` /
-/// `Tsái-Gí` instead of preserving CapsLock. After PR #310 r3278520895
-/// this asymmetry applies to **both** `Tl` and `Poj` modes (was POJ
-/// only — the cross-mode parity fold forced the symmetry). Production
-/// touch is bounded — the case asymmetry only affects a hanji-absent
-/// custom dict entry whose stored roman is all-caps Taigi-shaped, an
-/// extremely rare user pattern. `English` mode preserves CapsLock
-/// identically via the identity branch. Pinned by
-/// `engine/phonetics/tests/canonical_tl_form.rs::capslock_taigi_is_known_non_idempotent`.
+/// **Case is not identity.** A `TL` / `POJ` syllable comes out lowercase: an
+/// auto-capitalized `Kóng` and a typed `kóng` are one word (Core Principle
+/// 6), and the dictionary's readings are all lowercase. Text that does not
+/// parse as a syllable (`iPhone`) and `English` keep their case: that is the
+/// word the user wrote.
 pub fn canonical_tl_form(text: &str, mode: InputMode) -> String {
     match mode {
         // TL mode: still fold POJ-shaped spellings onto canonical TL for the
         // cross-mode identity (`góa`→`guá`, B-4 / R2 / R5), but keep TL special
         // finals `eng`[ɛŋ] / `ek` literal so a hanji-absent `teng` candidate's
         // committed `display_text` is `teng`, not `tíng` (2026-06-05 TL-literal).
-        InputMode::Tl => rewrite_display(text, System::Tl, true),
+        InputMode::Tl => rewrite_display(text, System::Tl, true, DisplayCase::Drop),
         // POJ mode: input genuinely IS POJ, so `eng`→`ing` is a correct POJ→TL
         // conversion — use the full fold.
-        InputMode::Poj => poj_display_to_tl_display(text),
+        InputMode::Poj => rewrite_display(text, System::Tl, false, DisplayCase::Drop),
         // v3.5.9 D / C-3b — TPS roman is Bopomofo, not POJ/TL Latin shape;
         // poj_display_to_tl_display would no-op on Bopomofo anyway (no Latin
         // patterns to substitute). Only the ㆳ glyph alias folds onto ㆪ, so a
@@ -663,7 +671,7 @@ pub fn canonical_tl_form(text: &str, mode: InputMode) -> String {
 /// (`taigi`) and a normal-commit canonical next_tl (`tâi-gí`) are the
 /// same reading and must not surface as two predictions of one word.
 ///
-/// **Tone-INSENSITIVE** — unlike `composing::roman_reading_eq` (which is
+/// **Tone-INSENSITIVE** — unlike [`roman_reading_eq`] (which is
 /// separator-insensitive but tone-PRESERVING), this folds tones away so
 /// `tāng` (重量) and `tàng` both key to `tang`; the caller is responsible
 /// for keeping genuinely distinct readings (Core Principle #7) apart by
@@ -681,15 +689,41 @@ pub fn toneless_reading_key(roman: &str) -> String {
     crate::derivation::derive_notone(roman)
 }
 
+/// Two romanizations are the **same reading** when they differ only in
+/// syllable separators: ASCII space (walker synth multi-word join), `-`
+/// (hyphen compound), or `--` (neutral-tone khinsiann, two `-` chars). Tone
+/// diacritics live inside the syllable letters and are NOT stripped, so
+/// the comparison is tone-preserving:
+///
+/// * `roman_reading_eq("hōo guá", "hōo--guá")` → `true` (予我: synth
+///   space-join vs dict khinsiann form — the same reading).
+/// * `roman_reading_eq("hōo guá", "hōo-guā")` → `false` (戶外: guā tone 7
+///   ≠ guá tone 2 — a different word, Core Principle #6).
+///
+/// Callers: the composing slot-0 promote and learned-pair fold
+/// (`composing::continuous`, `composing::requests`) and the nailed-join
+/// compound oracle (`lexicon::compound_hanji_exists`).
+pub fn roman_reading_eq(a: &str, b: &str) -> bool {
+    fn is_kept(c: &char) -> bool {
+        *c != ' ' && *c != '-'
+    }
+    // Allocation-free: compare the separator-filtered char streams
+    // directly (`Iterator::eq`). This runs per candidate in the per-
+    // keystroke slot-0 scan, so it must not heap-allocate a stripped
+    // `String` for each comparison.
+    a.chars().filter(is_kept).eq(b.chars().filter(is_kept))
+}
+
 // In-process search-key derivation for the engine's own user-data stores
 // (`userdata`): the write-side bundle plus the read-side query key. No wire
 // op: the read side answers `SearchCustomEntries` (the `DeriveCustomQueryKey`
 // op went with its last caller on 2026-09-30).
 pub use crate::custom_search::{
-    custom_search_reading, derive_custom_query_key, derive_custom_search_keys, CustomSearchKey,
+    custom_search_reading, derive_custom_query_key, derive_custom_search_keys,
+    tps_toneless_edge_key, CustomSearchKey,
 };
 
-pub use crate::hanji::{is_hanji, CJK_RANGES};
+pub use crate::hanji::{is_hanji, is_roman_only_spelling, CJK_RANGES};
 
 /// The syllables of a canonical TL string — `-` inside a word, ` ` between
 /// the words of a multi-word entry (`iā sī`); an empty piece (the khinsiann
@@ -703,7 +737,17 @@ pub fn tl_syllables(canonical_tl: &str) -> impl Iterator<Item = &str> {
 /// special final survives — used only by `canonical_tl_form` for TL mode. The
 /// public `poj_display_to_tl_display` / `tl_display_to_poj_display` (and POJ-mode
 /// `canonical_tl_form`) pass `false` for the full POJ↔TL fold.
-fn rewrite_display(text: &str, target: System, keep_tl_finals: bool) -> String {
+/// Whether a rewritten syllable keeps the capital its token started with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DisplayCase {
+    /// Display conversions: `Góa` stays `Guá`.
+    Keep,
+    /// The identity fold: `Góa` keys `guá`. Only parsed syllables lose case;
+    /// a token that is not Taigi (`iPhone`) is returned as typed.
+    Drop,
+}
+
+fn rewrite_display(text: &str, target: System, keep_tl_finals: bool, case: DisplayCase) -> String {
     if text.is_empty() {
         return String::new();
     }
@@ -711,18 +755,18 @@ fn rewrite_display(text: &str, target: System, keep_tl_finals: bool) -> String {
     let mut current = String::new();
     for ch in text.chars() {
         if ch == '-' || ch == ' ' {
-            out.push_str(&rewrite_token(&current, target, keep_tl_finals));
+            out.push_str(&rewrite_token(&current, target, keep_tl_finals, case));
             out.push(ch);
             current.clear();
         } else {
             current.push(ch);
         }
     }
-    out.push_str(&rewrite_token(&current, target, keep_tl_finals));
+    out.push_str(&rewrite_token(&current, target, keep_tl_finals, case));
     out
 }
 
-fn rewrite_token(token: &str, target: System, keep_tl_finals: bool) -> String {
+fn rewrite_token(token: &str, target: System, keep_tl_finals: bool, case: DisplayCase) -> String {
     if token.is_empty() {
         return String::new();
     }
@@ -750,7 +794,7 @@ fn rewrite_token(token: &str, target: System, keep_tl_finals: bool) -> String {
         System::Tps => return token.to_string(),
     };
     let first = token.chars().next().unwrap();
-    if first.is_uppercase() {
+    if case == DisplayCase::Keep && first.is_uppercase() {
         capitalize_first(&assembled)
     } else {
         assembled
@@ -760,6 +804,25 @@ fn rewrite_token(token: &str, target: System, keep_tl_finals: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roman_reading_eq_matches_separator_variants_preserves_tone() {
+        // 予我: walker space-join vs dict khinsiann — same reading.
+        assert!(roman_reading_eq("hōo guá", "hōo--guá"));
+        // Hyphen vs space — same reading.
+        assert!(roman_reading_eq("tâi gí", "tâi-gí"));
+        // 戶外: tone 7 `guā` ≠ tone 2 `guá` — different reading despite
+        // sharing the separator-stripped consonant/vowel skeleton.
+        assert!(!roman_reading_eq("hōo guá", "hōo-guā"));
+        // Identical strings (also-是 `iā sī` synth == dict) trivially eq.
+        assert!(roman_reading_eq("iā sī", "iā sī"));
+        // Different syllables entirely — not a reading match.
+        assert!(!roman_reading_eq("hōo guá", "tâi gí"));
+        // The nailed-join oracle's shape: per-syllable picks concatenated
+        // without a separator against the dictionary row.
+        assert!(roman_reading_eq("ánniâ", "án-niâ"));
+        assert!(!roman_reading_eq("ánniâ", "án-nia"));
+    }
 
     #[test]
     fn composing_mode_reads_the_tps_layout_as_tl() {

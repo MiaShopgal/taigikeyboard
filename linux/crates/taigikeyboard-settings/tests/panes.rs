@@ -336,23 +336,45 @@ fn the_custom_dictionary_lists_what_the_store_holds(window: &Rc<SettingsWindow>)
         entries.selected_row().is_some(),
         "the selection is kept by id across a reload"
     );
-    // Text that would be markup is shown as typed.
-    user_data::save_custom_entry("", "a-b", "A&B <b>").expect("save");
+    // Text that would be markup is shown as typed. The Hanji keeps an
+    // ideograph: a roman-only spelling is stored as no Hanji at all
+    // (`custom_dictionary.rs` `stored_hanji`).
+    user_data::save_custom_entry("", "a-b", "飯&B <b>").expect("save");
     dictionary.reload();
     pump_until(|| dictionary.shown_row_count() == 3);
     assert!(find_all::<gtk::Label>(page.widget.upcast_ref())
         .iter()
-        .any(|label| label.label() == "A&B <b>"));
-    let search = taigikeyboard_settings::pages::build(
-        SettingsPane::DictionarySearch,
+        .any(|label| label.label() == "飯&B <b>"));
+    // The search lives in Manage Dictionaries' bottom bar (#792), and only
+    // there.
+    let sources = taigikeyboard_settings::pages::build(
+        SettingsPane::DictionarySources,
         window,
         &strings,
         &document,
         true,
         window.job_slot(),
     );
-    assert!(find_first::<gtk::SearchEntry>(search.widget.upcast_ref()).is_some());
-    eprintln!("panes: custom dictionary lists the store; search page mounts");
+    assert!(find_first::<gtk::SearchEntry>(sources.widget.upcast_ref()).is_some());
+    let form = find_first::<adw::PreferencesPage>(sources.widget.upcast_ref())
+        .expect("the toggles' scrolling page");
+    assert!(
+        find_first::<gtk::SearchEntry>(form.upcast_ref()).is_none(),
+        "the search is the pinned bar, not part of what scrolls"
+    );
+    let without_user_data = taigikeyboard_settings::pages::build(
+        SettingsPane::DictionarySources,
+        window,
+        &strings,
+        &document,
+        false,
+        window.job_slot(),
+    );
+    assert!(
+        find_first::<gtk::SearchEntry>(without_user_data.widget.upcast_ref()).is_none(),
+        "no user data, no search bar"
+    );
+    eprintln!("panes: custom dictionary lists the store; Manage Dictionaries mounts its search");
 }
 
 /// One pick, as the IME reports it: the engine counts `(word, tl)`.
@@ -451,6 +473,23 @@ fn the_learning_records_list_what_the_keyboard_learned(window: &Rc<SettingsWindo
         records.shown_rows().is_empty(),
         "the phrases store is empty"
     );
+    // The pick is kept (#773): a page built again opens on Phrases.
+    let document = window.writer().borrow().document().clone();
+    assert_eq!(
+        document.choice(&keys::LEARNING_RECORDS_KIND),
+        user_data::LearningRecordKind::LearnedPhrase
+    );
+    let reopened = taigikeyboard_settings::pages::build(
+        SettingsPane::LearningRecords,
+        window,
+        &strings,
+        &document,
+        true,
+        window.job_slot(),
+    );
+    let reopened_kind =
+        find_first::<adw::ComboRow>(reopened.widget.upcast_ref()).expect("the kind picker");
+    assert_eq!(reopened_kind.selected(), 1);
     eprintln!("panes: learning records list the engine's rows and switch kind");
 }
 

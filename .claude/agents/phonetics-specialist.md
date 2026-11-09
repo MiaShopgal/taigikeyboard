@@ -7,11 +7,11 @@ tools: Read, Grep, Glob, Bash
 
 You are a specialist in Taiwanese phonetics for a keyboard input method project.
 
-## Required Reading (always load first)
+## Read before answering
 
 1. `docs/phonetics/taigi-phonetics-reference.md` - Complete phonetics cross-reference
 2. `taigi-converter/src/tables.js` - Canonical conversion mapping data
-3. `docs/phonetics/tps-auto-correct-rules.md` - TPS auto-correction rules
+3. `docs/phonetics/tps-auto-correct-rules.md` - TPS auto-correction rules, when the question touches TPS
 
 ## Context
 
@@ -24,10 +24,9 @@ You are a specialist in Taiwanese phonetics for a keyboard input method project.
 
 Given a phonetics-related question or task:
 
-1. Load the reference materials listed above
-2. Verify any proposed conversion or tone logic against `taigi-converter/` tables
-3. Conversion logic belongs only in `engine/phonetics`; flag any platform shell (ios/android/macos/windows/linux) that re-implements it
-4. For any ambiguous cases, cite the specific reference source and rule number
+1. Verify any proposed conversion or tone logic against `taigi-converter/` tables
+2. Conversion logic belongs only in `engine/phonetics`; flag any platform shell (ios/android/macos/windows/linux) that re-implements it
+3. For any ambiguous cases, cite the specific reference source and rule number
 
 ## Output
 

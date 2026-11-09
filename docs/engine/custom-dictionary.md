@@ -21,7 +21,7 @@
 |-------|------|-------------|
 | `id` | String (UUID) | Unique identifier |
 | `roman` | String | Romanization in the user's native form (TL or POJ display, whichever the user typed when saving). The engine treats it raw on the lattice axis; the freq-key commit value is canonicalized to TL (`phonetics::api::canonical_tl_form`). |
-| `hanzi` | String | Chinese/Taiwanese characters |
+| `hanzi` | String | The Hanji (Han-Lo spellings such as `白phau-phau` included); empty for a word written only in romanization. Every write — add, edit, CSV import, `.taigi` restore — stores a Hanji column whose spelling is written only in romanization — a Latin letter, no ideograph or kana (`lán,lán`) — empty, the rule the dictionary pipeline applies to the shipped rows (`phonetics::api::is_roman_only_spelling`, the port of `dictionary/common/cleanup.py` `is_roman_only_hanzi`; shared cases in `dictionary/tests/fixtures/roman_only_spelling_cases.tsv`), so an imported roman-only word and the shipped one are one candidate. Rows an older build stored are repaired at launch (`normalize_stored_rows_if_needed`). |
 | search keys | `custom_search_key` rows | Derived per entry by the engine: TL / POJ / TPS families × tone-number / toneless / abbreviation forms (`engine/phonetics/src/custom_search.rs`) |
 | `created_at` | Timestamp | Creation time (UTC) — DB column only, not on the wire (`CustomDictionaryEntry` tag 4 reserved) |
 | `updated_at` | Timestamp | Last update time — DB column only, not on the wire (tag 5 reserved) |
@@ -88,10 +88,11 @@ tsia̍h-pá--buē,食飽未
 
 ### Import (CSV File)
 1. Read UTF-8
-2. Parse CSV (data-only, 2 columns: roman, hanzi)
+2. Parse CSV (data-only, 2 columns: roman, hanzi; the hanzi column may be empty — `lán,` is a romanization-only word)
 3. Validate format
-4. Deduplicate by `roman|hanzi` key
-5. Return `ImportResult { imported: Int, skipped: Int }`
+4. Store form: roman in NFC with tone digits as marks; a hanzi column spelled only in romanization (`lán,lán`) emptied
+5. Deduplicate by `roman|hanzi` key
+6. Return `ImportResult { imported: Int, skipped: Int }`
 
 CSV is **custom-dictionary-only**. For whole-user-data backup see `.taigi` below.
 
@@ -129,10 +130,12 @@ A `.taigi` file is a single plain-text **JSON** document carrying **three** user
 A custom entry is offered by the same rules as a system dictionary word (behavioral-invariants.md §43): only once the typed input reaches into its final syllable (陳建中 `Tân Kiàn-tiong` from `tankiant`, not `t`), or on its whole abbreviation (`tkt`). Once offered, a never-selected entry follows the words the user has selected and leads every other candidate covering the whole input (`preference_class`, `continuous-input-ranking.md`), except that an entry reached through its abbreviation follows every reading of that input (`thng` → 湯 / 糖, then a custom 退伍 `thui-ńg`; `abbreviation` field). Once selected it ranks by its selection weight like any word (USER 2026-10-16: a bulk import filing 屢 `lí` put it ahead of 你, which the user picks, on `li2`). It wins a collision with the same system word (source rank 0). The walker's edge pick weighs the entries under an edge's key together with the dictionary's homophones by the same order.
 
 **Flow** (every platform, inside one `FetchAtPos`):
-1. `engine/dispatch/src/user_data/with_stores.rs` (`buffer_rows`) derives the query key from the raw (unsegmented) pending buffer (`phonetics::api::derive_custom_query_key`) and reads the matching custom rows (`CustomDictionaryStore::keystroke_rows`: the query's form by prefix, the abbreviation whole, shortest key first, 20 rows) — skipped when `FetchAtPos.custom_dictionary_disabled` — plus the learned phrases
+1. `engine/dispatch/src/user_data/with_stores.rs` (`buffer_rows`) derives the query key from the raw (unsegmented) pending buffer (`phonetics::api::derive_custom_query_key`) and reads the matching custom rows (`CustomDictionaryStore::keystroke_rows`: the query's form by prefix, the abbreviation whole, shortest key first, 20 rows) — skipped when `AppConfig.custom_dictionary_disabled` — plus the learned phrases
 2. The rows reach composing as `composing::UserRows`
 3. System dictionary queried in the same fetch
 4. Merge (`lexicon::continuous`): each custom row is sorted by `custom_reach` into the full block (typed in full), the partial-prefix block (final syllable typed into) or dropped; the abbreviation block takes the whole-abbreviation rows; deduplicated against the system words
+
+**TPS Hanji conversion walk** (desktop, each walk of the closed readings): the walk hands the toneless body of every lattice edge (`ㄉㄢㄙㆩ`) to `StoredFrequency::rows_for_edge_keys` (`with_stores.rs`), which reads the custom rows (`CustomDictionaryStore::rows_with_key`, unless `AppConfig.custom_dictionary_disabled`) and learned phrases filed under that `tps:notone` key whole — so a custom word anywhere in the walked text meets its edge. A TL / POJ stored roman keys the edge by its Bopomofo face (`composing::shadow::custom_toneless_key`), and the word commits under its TL-mode `(hanji, canonical TL)` pair. The same Bopomofo-face key lets the `FetchAtPos` walker (slot 0, every platform) take the custom and learned rows `buffer_rows` returns for a TPS buffer.
 
 **Search page**: key prefix over `custom_search_key` in the query's family (tone-number or toneless form, plus the abbreviation form by prefix — `rows_matching`, the system dictionary search's own union)
 

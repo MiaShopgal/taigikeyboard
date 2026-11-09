@@ -21,27 +21,4 @@ public interface FetchAtPosOrBuilder extends
    * @return The literalRomanCandidateDisabled.
    */
   boolean getLiteralRomanCandidateDisabled();
-
-  /**
-   * <pre>
-   * The user's "use my custom dictionary" setting, OFF: the engine reads no
-   * custom-dictionary rows for this fetch. Negative like field 6, so an
-   * un-wired build keeps the dictionary on.
-   * </pre>
-   *
-   * <code>bool custom_dictionary_disabled = 8;</code>
-   * @return The customDictionaryDisabled.
-   */
-  boolean getCustomDictionaryDisabled();
-
-  /**
-   * <code>.taigi.engine.DictionarySourceToggles toggles = 9;</code>
-   * @return Whether the toggles field is set.
-   */
-  boolean hasToggles();
-  /**
-   * <code>.taigi.engine.DictionarySourceToggles toggles = 9;</code>
-   * @return The toggles.
-   */
-  com.siansiansu.taigikeyboard.engine.proto.DictionarySourceToggles getToggles();
 }
